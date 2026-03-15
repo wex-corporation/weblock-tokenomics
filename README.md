@@ -99,12 +99,34 @@ pnpm hardhat run scripts/create-series.js --network avalancheSubnet
 
 ## 문서 목록
 
+- [시나리오 카탈로그](./docs/SCENARIO_CATALOG.md)
 - [아키텍처 문서](./docs/ARCHITECTURE.md)
 - [감사 범위와 체크리스트](./docs/AUDIT_SCOPE.md)
 - [위협 모델](./docs/THREAT_MODEL.md)
 - [운영 절차](./docs/OPERATIONS.md)
 - [함수 설명서](./docs/FUNCTION_REFERENCE.md)
 - [비개발자용 설명서](./docs/NON_TECHNICAL_GUIDE.md)
+
+## 시나리오 실행 스크립트
+
+### RBT 운영 액션
+
+```bash
+ACTION=series-info \
+RBT_MANAGER_ADDRESS=0xManager \
+TOKEN_ID=1 \
+pnpm rbt:action
+```
+
+### 재단 토큰 액션
+
+```bash
+ACTION=wft-mint \
+WFT_ADDRESS=0xWft \
+RECIPIENT=0xRecipient \
+AMOUNT=1000000000000000000 \
+pnpm foundation:action
+```
 
 ## 운영상 주의
 
