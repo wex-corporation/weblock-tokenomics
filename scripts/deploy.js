@@ -118,6 +118,10 @@ async function main() {
     await redemptionRouter.grantRole(claimsManagerRole, manager.target)
   ).wait();
 
+  // Exempt the order book from the manager's transfer gate so makers can always
+  // reclaim escrow (fills remain gated inside the order book itself).
+  await (await manager.setTradingVenue(orderBook.target, true)).wait();
+
   const deployment = {
     network: networkName,
     chainId: Number((await ethers.provider.getNetwork()).chainId),

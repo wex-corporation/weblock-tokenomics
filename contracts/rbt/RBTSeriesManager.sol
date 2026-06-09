@@ -88,6 +88,17 @@ contract RBTSeriesManager is
     mapping(uint256 => mapping(address => uint256)) public redemptionPerToken;
     mapping(uint256 => mapping(address => uint256))
         public redemptionSupplySnapshot;
+    // Per-series funds held in the shared routers. Funding increments these and
+    // payouts decrement them, so a series can never pay out more than it funded
+    // and one series' interest/redemption cannot drain another's (the routers
+    // commingle custody, but this accounting enforces per-series segregation and
+    // redemption solvency).
+    mapping(uint256 => mapping(address => uint256)) public interestRemaining;
+    mapping(uint256 => mapping(address => uint256)) public redemptionRemaining;
+    // Escrow venues (e.g. the order book) that may move RBT to/from themselves
+    // even when a series is not actively trading, so escrow can always be
+    // returned on cancel. Fill-time tradability is enforced by the venue itself.
+    mapping(address => bool) public tradingVenue;
 
     event SeriesCreated(
         uint256 indexed tokenId,
@@ -160,6 +171,7 @@ contract RBTSeriesManager is
         uint256 quantity,
         uint256 payout
     );
+    event TradingVenueUpdated(address indexed venue, bool allowed);
 
     modifier seriesExists(uint256 tokenId) {
         if (!_seriesById[tokenId].exists) {
@@ -325,6 +337,17 @@ contract RBTSeriesManager is
         _seriesById[tokenId].secondaryTradingEnabled = enabled;
     }
 
+    function setTradingVenue(
+        address venue,
+        bool allowed
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (venue == address(0)) {
+            revert WeBlockErrors.ZeroAddress();
+        }
+        tradingVenue[venue] = allowed;
+        emit TradingVenueUpdated(venue, allowed);
+    }
+
     function updateMetadataURI(
         uint256 tokenId,
         string calldata metadataURI
@@ -488,6 +511,7 @@ contract RBTSeriesManager is
         }
 
         interestRouter.fundFrom(paymentToken, msg.sender, amount);
+        interestRemaining[tokenId][paymentToken] += amount;
         accInterestPerShare[tokenId][paymentToken] +=
             (amount * ACCURACY) / currentSupply;
         emit InterestFunded(
@@ -510,6 +534,7 @@ contract RBTSeriesManager is
         }
 
         pendingInterest[msg.sender][tokenId][paymentToken] = 0;
+        interestRemaining[tokenId][paymentToken] -= amount;
         interestRouter.payout(paymentToken, msg.sender, amount);
         emit InterestClaimed(tokenId, msg.sender, paymentToken, amount);
     }
@@ -530,6 +555,7 @@ contract RBTSeriesManager is
             }
 
             pendingInterest[msg.sender][tokenId][paymentTokens[i]] = 0;
+            interestRemaining[tokenId][paymentTokens[i]] -= amount;
             interestRouter.payout(paymentTokens[i], msg.sender, amount);
             emit InterestClaimed(tokenId, msg.sender, paymentTokens[i], amount);
             claimed += amount;
@@ -646,6 +672,7 @@ contract RBTSeriesManager is
         redemptionRouter.fundFrom(paymentToken, msg.sender, totalAmount);
         redemptionEnabled[tokenId][paymentToken] = true;
         redemptionSupplySnapshot[tokenId][paymentToken] = supplySnapshot;
+        redemptionRemaining[tokenId][paymentToken] = totalAmount;
         redemptionPerToken[tokenId][paymentToken] =
             (totalAmount * ACCURACY) / supplySnapshot;
 
@@ -671,6 +698,7 @@ contract RBTSeriesManager is
 
         uint256 payout =
             (quantity * redemptionPerToken[tokenId][paymentToken]) / ACCURACY;
+        redemptionRemaining[tokenId][paymentToken] -= payout;
         rbtToken.burn(msg.sender, tokenId, quantity);
         redemptionRouter.payout(paymentToken, msg.sender, payout);
         emit Redeemed(tokenId, msg.sender, paymentToken, quantity, payout);
@@ -692,6 +720,8 @@ contract RBTSeriesManager is
             if (
                 from != address(0) &&
                 to != address(0) &&
+                !tradingVenue[from] &&
+                !tradingVenue[to] &&
                 !isSeriesActiveForTrading(tokenId)
             ) {
                 revert WeBlockErrors.TransferNotAllowed();

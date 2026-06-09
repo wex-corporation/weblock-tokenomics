@@ -180,6 +180,14 @@ contract RBTOrderBook is ERC1155Holder, AccessControl, ReentrancyGuard {
         if (order.status != OrderStatus.Open) {
             revert WeBlockErrors.OrderClosed();
         }
+        // Enforce tradability at fill time. The series manager exempts this
+        // contract from its transfer gate (so makers can always cancel and
+        // reclaim escrow), so fills must be blocked here when the series is not
+        // actively trading — otherwise the exemption would let trades settle
+        // during a freeze/delinquency/maturity.
+        if (!seriesManager.isSeriesActiveForTrading(order.tokenId)) {
+            revert WeBlockErrors.TransferNotAllowed();
+        }
         if (block.timestamp > order.expiry) {
             revert WeBlockErrors.OrderExpired();
         }
