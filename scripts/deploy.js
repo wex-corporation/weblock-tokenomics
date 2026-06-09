@@ -14,8 +14,21 @@ async function main() {
   const connection = await hre.network.connect();
   const { ethers } = connection;
   const [deployer] = await ethers.getSigners();
+  const chainId = Number((await ethers.provider.getNetwork()).chainId);
+  // hre.network.name is unreliable under Hardhat 3's connect() API (returns
+  // "hardhat" even with --network fuji), so name the manifest by chainId.
+  const CHAIN_NAMES = {
+    43113: "fuji",
+    43114: "avalanche",
+    43110: "avalancheSubnet",
+    11155111: "sepolia",
+    84532: "baseSepolia",
+    97: "bnbTestnet",
+    195: "xlayerTestnet",
+    31337: "hardhat",
+  };
   const networkName =
-    process.env.HARDHAT_NETWORK || hre.network.name || "hardhat";
+    process.env.HARDHAT_NETWORK || CHAIN_NAMES[chainId] || `chain-${chainId}`;
 
   const admin = process.env.ADMIN_ADDRESS || deployer.address;
   const treasury = process.env.FOUNDATION_TREASURY_ADDRESS || admin;
@@ -34,6 +47,18 @@ async function main() {
 
   let usdtAddress = process.env.USDT_ADDRESS;
   let usdcAddress = process.env.USDC_ADDRESS;
+
+  // Guard against silently overwriting real stablecoins with throwaway mocks
+  // (MockStablecoin.mint is unrestricted). If mocks are forced while real
+  // addresses are also supplied, that is contradictory — fail loudly instead of
+  // wiring the deployment to worthless tokens.
+  if (deployMockStables && (usdtAddress || usdcAddress)) {
+    throw new Error(
+      "DEPLOY_MOCK_STABLES=true but USDT_ADDRESS/USDC_ADDRESS were also provided. " +
+        "Refusing to overwrite real stablecoin addresses with mocks. " +
+        "Unset the real addresses to use mocks, or unset DEPLOY_MOCK_STABLES.",
+    );
+  }
 
   if (deployMockStables || (!usdtAddress && !usdcAddress)) {
     const mockUsdt = await MockStablecoin.deploy("Tether USD", "USDT", 6);
@@ -106,9 +131,13 @@ async function main() {
     await redemptionRouter.grantRole(claimsManagerRole, manager.target)
   ).wait();
 
+  // Exempt the order book from the manager's transfer gate so makers can always
+  // reclaim escrow (fills remain gated inside the order book itself).
+  await (await manager.setTradingVenue(orderBook.target, true)).wait();
+
   const deployment = {
     network: networkName,
-    chainId: Number((await ethers.provider.getNetwork()).chainId),
+    chainId,
     deployedAt: new Date().toISOString(),
     deployer: deployer.address,
     admin,

@@ -313,4 +313,144 @@ describe("RBT primary lifecycle", function () {
     );
     expect(await rbt.balanceOf(alice.address, 1)).to.equal(0n);
   });
+
+  it("rejects series creation with an empty property code or zero supply", async function () {
+    const connection = await hre.network.connect();
+    const { networkHelpers } = connection;
+    const { manager, issuerTreasury, usdt, usdc, million } =
+      await deployRbtFixture(connection);
+
+    const now = await networkHelpers.time.latest();
+    const params = (overrides) => ({
+      tokenId: 2,
+      saleStart: now + 10,
+      saleEnd: now + 110,
+      maturityDate: now + 1110,
+      maxSupply: 10,
+      issuerTreasury: issuerTreasury.address,
+      secondaryTradingEnabled: true,
+      propertyCode: "B",
+      propertyName: "Asset B",
+      roundNumber: 1,
+      roundLabel: "B-1",
+      metadataURI: "ipfs://b.json",
+      ...overrides,
+    });
+    const tokens = [usdt.target, usdc.target];
+    const prices = [100n * million, 100n * million];
+
+    await expectCustomError(
+      manager.createSeries(params({ propertyCode: "" }), tokens, prices),
+      "InvalidMetadata",
+    );
+    await expectCustomError(
+      manager.createSeries(params({ maxSupply: 0 }), tokens, prices),
+      "QuantityTooLow",
+    );
+
+    // sanity: a valid series with the same shape still succeeds
+    await manager.createSeries(params({}), tokens, prices);
+    expect((await manager.getSeries(2)).exists).to.equal(true);
+  });
+
+  it("lets a maker reclaim order-book escrow during delinquency while blocking fills", async function () {
+    const connection = await hre.network.connect();
+    const { alice, bob, usdt, rbt, manager, orderBook, million } =
+      await deployRbtFixture(connection);
+
+    // The series manager exempts the order book from its transfer gate so escrow
+    // can always be returned; fills are gated inside the order book instead.
+    await manager.setTradingVenue(orderBook.target, true);
+
+    await manager
+      .connect(alice)
+      .buy(1, usdt.target, 6, 600n * million, alice.address);
+    await manager
+      .connect(bob)
+      .buy(1, usdt.target, 4, 400n * million, bob.address);
+
+    await rbt.connect(alice).setApprovalForAll(orderBook.target, true);
+    const current = await connection.networkHelpers.time.latest();
+    await orderBook
+      .connect(alice)
+      .createAsk(1, usdt.target, 2, 120n * million, current + 3600);
+
+    // Series becomes delinquent: fills must be blocked...
+    await manager.markDelinquent(1, "late payment");
+    await expectCustomError(
+      orderBook.connect(bob).fillOrder(1, 1, bob.address),
+      "TransferNotAllowed",
+    );
+
+    // ...but the maker can still cancel and reclaim the escrowed RBT.
+    await orderBook.connect(alice).cancelOrder(1);
+    expect(await rbt.balanceOf(alice.address, 1)).to.equal(6n);
+  });
+
+  it("segregates redemption funds so one series cannot drain another's", async function () {
+    const connection = await hre.network.connect();
+    const { networkHelpers } = connection;
+    const { admin, alice, bob, issuerTreasury, usdt, manager, million } =
+      await deployRbtFixture(connection);
+
+    // Series 1: alice fully subscribes, then it matures.
+    await manager
+      .connect(alice)
+      .buy(1, usdt.target, 10, 1000n * million, alice.address);
+
+    // Series 2 shares the same manager + redemption router.
+    const now = await networkHelpers.time.latest();
+    await manager.createSeries(
+      {
+        tokenId: 2,
+        saleStart: now + 5,
+        saleEnd: now + 105,
+        maturityDate: now + 1105,
+        maxSupply: 10,
+        issuerTreasury: issuerTreasury.address,
+        secondaryTradingEnabled: true,
+        propertyCode: "B",
+        propertyName: "Asset B",
+        roundNumber: 1,
+        roundLabel: "B-1",
+        metadataURI: "ipfs://b.json",
+      },
+      [usdt.target],
+      [100n * million],
+    );
+    await manager.openSale(2);
+    await networkHelpers.time.increaseTo(now + 6);
+    await manager.connect(bob).buy(2, usdt.target, 10, 1000n * million, bob.address);
+
+    // Mature both and fund EACH series' redemption with its own amount.
+    await networkHelpers.time.increaseTo(now + 2000);
+    await networkHelpers.mine();
+    await manager.enterMaturity(1);
+    await manager.enterMaturity(2);
+    await manager.enableRedemption(1, usdt.target, 2000n * million);
+    await manager.enableRedemption(2, usdt.target, 500n * million);
+
+    expect(await manager.redemptionRemaining(1, usdt.target)).to.equal(
+      2000n * million,
+    );
+    expect(await manager.redemptionRemaining(2, usdt.target)).to.equal(
+      500n * million,
+    );
+
+    // Series 1 redeems its full entitlement (2000 USDT for 10 units)...
+    const aliceBefore = await usdt.balanceOf(alice.address);
+    await manager.connect(alice).redeem(1, usdt.target, 10);
+    expect((await usdt.balanceOf(alice.address)) - aliceBefore).to.equal(
+      2000n * million,
+    );
+    expect(await manager.redemptionRemaining(1, usdt.target)).to.equal(0n);
+
+    // ...and series 2 can STILL fully redeem its own 500 USDT (not drained).
+    const bobBefore = await usdt.balanceOf(bob.address);
+    await manager.connect(bob).redeem(2, usdt.target, 10);
+    expect((await usdt.balanceOf(bob.address)) - bobBefore).to.equal(
+      500n * million,
+    );
+    expect(await manager.redemptionRemaining(2, usdt.target)).to.equal(0n);
+  });
 });

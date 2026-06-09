@@ -12,6 +12,7 @@ library WeBlockErrors {
     error MaturityNotReached();
     error SeriesAlreadyExists();
     error SeriesNotFound();
+    error InvalidMetadata();
     error QuantityTooLow();
     error QuantityTooHigh();
     error PriceSlippage();

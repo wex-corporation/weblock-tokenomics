@@ -33,6 +33,14 @@ const config = {
       chainId: Number(process.env.AVALANCHE_SUBNET_CHAIN_ID || 43110),
       accounts,
     },
+    fuji: {
+      type: "http",
+      url:
+        process.env.FUJI_RPC_URL ||
+        "https://api.avax-test.network/ext/bc/C/rpc",
+      chainId: 43113,
+      accounts,
+    },
   },
   paths: {
     sources: "./contracts",
