@@ -14,8 +14,21 @@ async function main() {
   const connection = await hre.network.connect();
   const { ethers } = connection;
   const [deployer] = await ethers.getSigners();
+  const chainId = Number((await ethers.provider.getNetwork()).chainId);
+  // hre.network.name is unreliable under Hardhat 3's connect() API (returns
+  // "hardhat" even with --network fuji), so name the manifest by chainId.
+  const CHAIN_NAMES = {
+    43113: "fuji",
+    43114: "avalanche",
+    43110: "avalancheSubnet",
+    11155111: "sepolia",
+    84532: "baseSepolia",
+    97: "bnbTestnet",
+    195: "xlayerTestnet",
+    31337: "hardhat",
+  };
   const networkName =
-    process.env.HARDHAT_NETWORK || hre.network.name || "hardhat";
+    process.env.HARDHAT_NETWORK || CHAIN_NAMES[chainId] || `chain-${chainId}`;
 
   const admin = process.env.ADMIN_ADDRESS || deployer.address;
   const treasury = process.env.FOUNDATION_TREASURY_ADDRESS || admin;
@@ -124,7 +137,7 @@ async function main() {
 
   const deployment = {
     network: networkName,
-    chainId: Number((await ethers.provider.getNetwork()).chainId),
+    chainId,
     deployedAt: new Date().toISOString(),
     deployer: deployer.address,
     admin,
