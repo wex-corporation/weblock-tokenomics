@@ -213,8 +213,17 @@ contract RBTSeriesManager is
         ) {
             revert WeBlockErrors.SaleWindowInvalid();
         }
-        if (_seriesById[params.tokenId].exists || params.maxSupply == 0) {
+        if (_seriesById[params.tokenId].exists) {
             revert WeBlockErrors.SeriesAlreadyExists();
+        }
+        if (params.maxSupply == 0) {
+            revert WeBlockErrors.QuantityTooLow();
+        }
+        // The RBT token uses a non-empty propertyCode as its series-existence
+        // flag (RealEstateBackedToken.registerSeries / uri / metadata updates),
+        // so an empty propertyCode would silently break those paths.
+        if (bytes(params.propertyCode).length == 0) {
+            revert WeBlockErrors.InvalidMetadata();
         }
 
         _seriesById[params.tokenId] = Series({

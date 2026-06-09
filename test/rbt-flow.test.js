@@ -313,4 +313,43 @@ describe("RBT primary lifecycle", function () {
     );
     expect(await rbt.balanceOf(alice.address, 1)).to.equal(0n);
   });
+
+  it("rejects series creation with an empty property code or zero supply", async function () {
+    const connection = await hre.network.connect();
+    const { networkHelpers } = connection;
+    const { manager, issuerTreasury, usdt, usdc, million } =
+      await deployRbtFixture(connection);
+
+    const now = await networkHelpers.time.latest();
+    const params = (overrides) => ({
+      tokenId: 2,
+      saleStart: now + 10,
+      saleEnd: now + 110,
+      maturityDate: now + 1110,
+      maxSupply: 10,
+      issuerTreasury: issuerTreasury.address,
+      secondaryTradingEnabled: true,
+      propertyCode: "B",
+      propertyName: "Asset B",
+      roundNumber: 1,
+      roundLabel: "B-1",
+      metadataURI: "ipfs://b.json",
+      ...overrides,
+    });
+    const tokens = [usdt.target, usdc.target];
+    const prices = [100n * million, 100n * million];
+
+    await expectCustomError(
+      manager.createSeries(params({ propertyCode: "" }), tokens, prices),
+      "InvalidMetadata",
+    );
+    await expectCustomError(
+      manager.createSeries(params({ maxSupply: 0 }), tokens, prices),
+      "QuantityTooLow",
+    );
+
+    // sanity: a valid series with the same shape still succeeds
+    await manager.createSeries(params({}), tokens, prices);
+    expect((await manager.getSeries(2)).exists).to.equal(true);
+  });
 });
