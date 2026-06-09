@@ -35,6 +35,18 @@ async function main() {
   let usdtAddress = process.env.USDT_ADDRESS;
   let usdcAddress = process.env.USDC_ADDRESS;
 
+  // Guard against silently overwriting real stablecoins with throwaway mocks
+  // (MockStablecoin.mint is unrestricted). If mocks are forced while real
+  // addresses are also supplied, that is contradictory — fail loudly instead of
+  // wiring the deployment to worthless tokens.
+  if (deployMockStables && (usdtAddress || usdcAddress)) {
+    throw new Error(
+      "DEPLOY_MOCK_STABLES=true but USDT_ADDRESS/USDC_ADDRESS were also provided. " +
+        "Refusing to overwrite real stablecoin addresses with mocks. " +
+        "Unset the real addresses to use mocks, or unset DEPLOY_MOCK_STABLES.",
+    );
+  }
+
   if (deployMockStables || (!usdtAddress && !usdcAddress)) {
     const mockUsdt = await MockStablecoin.deploy("Tether USD", "USDT", 6);
     const mockUsdc = await MockStablecoin.deploy("USD Coin", "USDC", 6);
