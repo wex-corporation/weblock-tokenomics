@@ -17,5 +17,17 @@
     "rbt": "0x91786bEFeB00163CFCBDffCA9959Eb788D5b4Fc0",
     "rbtSeriesManager": "0x65Cb981A6FE0F5B489171e7725949f9299ba2a05",
     "rbtOrderBook": "0x97195CA8aed94b24D4a28d7fC401F517aC180884"
+  },
+  "perp": {
+    "deployedAt": "2026-06-14T12:12:50.385Z",
+    "settlementOperator": "0xC4C47A2373418E210CE171bfb389FC8d2Dfe6229",
+    "navPublisher": "0xC4C47A2373418E210CE171bfb389FC8d2Dfe6229",
+    "maxDeviationBps": 2000,
+    "maxStalenessSecs": 86400,
+    "contracts": {
+      "navOracle": "0xD51078924eC246DA7400cd6749eeEBa56C34De63",
+      "insuranceFund": "0x12Da8B24a6a5bdd3a31246D5716eC441e7561E9d",
+      "perpClearing": "0x0c391C8De939B9BF86C22EaEEA1Ed7c8AC849a46"
+    }
   }
 }
