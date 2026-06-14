@@ -195,6 +195,26 @@ describe("PerpClearing", function () {
     expect(await clearing.protocolFees()).to.equal(makerFee + takerFee);
   });
 
+  it("averages the entry price when increasing a position", async function () {
+    const fx = await deployPerpFixture(await hre.network.connect());
+    const { clearing, oracle, admin, alice, bob, carol, deposit } = fx;
+
+    await deposit(alice, 1000n * M);
+    await deposit(bob, 1000n * M);
+    await deposit(carol, 1000n * M);
+
+    // alice longs 5 @100 (vs bob); price rises; alice adds 5 @120 (vs carol, a
+    // fresh short so the counterparty stays solvent). Avg entry = 110, size 10.
+    await openLongShort(fx, alice, bob, 5n, PRICE);
+    const higher = 120n * M;
+    await oracle.connect(admin).publishPrice(MARKET, higher);
+    await openLongShort(fx, alice, carol, 5n, higher);
+
+    const aPos = await clearing.getPosition(alice.address, MARKET);
+    expect(aPos[0]).to.equal(10n); // size
+    expect(aPos[1]).to.equal(110n * M); // weighted avg entry (5*100 + 5*120)/10
+  });
+
   it("realises profit/loss as a zero-sum on close", async function () {
     const fx = await deployPerpFixture(await hre.network.connect());
     const { clearing, oracle, admin, alice, bob, deposit } = fx;
