@@ -8,10 +8,8 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "coverage": "hardhat test",
+    "deploy:fuji": "hardhat run scripts/deploy.js --network fuji",
     "deploy:subnet": "hardhat run scripts/deploy.js --network avalancheSubnet",
-    "series:create": "hardhat run scripts/create-series.js --network avalancheSubnet",
-    "rbt:action": "hardhat run scripts/rbt-action.js --network avalancheSubnet",
-    "foundation:action": "hardhat run scripts/foundation-action.js --network avalancheSubnet",
     "format": "prettier --plugin prettier-plugin-solidity --write \"contracts/**/*.sol\" \"test/**/*.js\" \"scripts/**/*.js\" \"docs/**/*.md\" \"README.md\" \"hardhat.config.js\"",
     "lint:sol": "solhint 'contracts/**/*.sol'",
     "check": "pnpm compile && pnpm test"

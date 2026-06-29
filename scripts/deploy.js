@@ -1,183 +1,183 @@
+// Greenfield WeBlock contract deployment.
+// Deploys the full suite, wires roles/gates, writes a chainId-named manifest under deployments/,
+// and exports ABIs under abis/ for the backend + wallet SDK to consume.
+//
+// Usage: npx hardhat run scripts/deploy.js --network fuji
 import fs from "node:fs/promises";
 import path from "node:path";
 import hre from "hardhat";
 
-function requireEnv(name) {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required env: ${name}`);
-  }
-  return value;
+const CHAIN_NAMES = {
+  43113: "fuji",
+  43114: "avalanche",
+  43110: "avalancheSubnet",
+  31337: "hardhat",
+};
+
+const role = (name) => hre.ethers?.keccak256
+  ? hre.ethers.keccak256(hre.ethers.toUtf8Bytes(name))
+  : null;
+
+function env(name, fallback) {
+  const v = process.env[name];
+  return v === undefined || v === "" ? fallback : v;
 }
 
 async function main() {
   const connection = await hre.network.connect();
   const { ethers } = connection;
   const [deployer] = await ethers.getSigners();
-  const chainId = Number((await ethers.provider.getNetwork()).chainId);
-  // hre.network.name is unreliable under Hardhat 3's connect() API (returns
-  // "hardhat" even with --network fuji), so name the manifest by chainId.
-  const CHAIN_NAMES = {
-    43113: "fuji",
-    43114: "avalanche",
-    43110: "avalancheSubnet",
-    11155111: "sepolia",
-    84532: "baseSepolia",
-    97: "bnbTestnet",
-    195: "xlayerTestnet",
-    31337: "hardhat",
+  const net = await ethers.provider.getNetwork();
+  const chainId = Number(net.chainId);
+  const networkName = CHAIN_NAMES[chainId] || `chain-${chainId}`;
+
+  const admin = env("ADMIN_ADDRESS", deployer.address);
+  const treasury = env("FOUNDATION_TREASURY_ADDRESS", deployer.address);
+  const feeTreasury = env("FEE_TREASURY_ADDRESS", deployer.address);
+  const operator = env("BACKEND_OPERATOR_ADDRESS", deployer.address); // backend signer (KYC/settlement/oracle/...)
+  const baseUri = env("FALLBACK_RBT_URI", "ipfs://weblock/rbt/{id}.json");
+  const usdrInitial = BigInt(env("USDR_INITIAL_SUPPLY", "1000000000000")); // 1,000,000 USDR
+  const wftCap = BigInt(env("WFT_CAP", "1000000000000000000000000000")); // 1B * 1e18
+  const navMaxDevBps = Number(env("NAV_MAX_DEVIATION_BPS", "2000"));
+  const navMaxStale = Number(env("NAV_MAX_STALENESS_SECS", "86400"));
+  const spotFeeBps = Number(env("SPOT_FEE_BPS", "100"));
+  const deployMocks = env("DEPLOY_MOCK_STABLES", "true") === "true";
+
+  const R = {
+    MANAGER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_MANAGER")),
+    MINTER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_MINTER")),
+    KYC_MANAGER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_KYC_MANAGER")),
+    OPERATOR: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_OPERATOR")),
+    TREASURY_FUNDER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_TREASURY_FUNDER")),
+    DELINQUENCY_MANAGER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_DELINQUENCY_MANAGER")),
+    DISTRIBUTION_MANAGER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_DISTRIBUTION_MANAGER")),
+    SETTLEMENT: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_SETTLEMENT")),
+    FUNDING: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_FUNDING")),
+    LIQUIDATOR: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_LIQUIDATOR")),
+    MARKET_ADMIN: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_MARKET_ADMIN")),
+    ORACLE_PUBLISHER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_ORACLE_PUBLISHER")),
+    DRAWER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_DRAWER")),
   };
-  const networkName =
-    process.env.HARDHAT_NETWORK || CHAIN_NAMES[chainId] || `chain-${chainId}`;
 
-  const admin = process.env.ADMIN_ADDRESS || deployer.address;
-  const treasury = process.env.FOUNDATION_TREASURY_ADDRESS || admin;
-  const fallbackUri =
-    process.env.FALLBACK_RBT_URI || "ipfs://weblock/rbt/{id}.json";
-  const deployMockStables =
-    (process.env.DEPLOY_MOCK_STABLES || "false").toLowerCase() === "true";
+  console.log(`Deploying WeBlock greenfield to ${networkName} (${chainId}) as ${deployer.address}`);
+  const bal = await ethers.provider.getBalance(deployer.address);
+  console.log(`Deployer balance: ${ethers.formatEther(bal)}`);
 
-  const WFT = await ethers.getContractFactory("WFTToken");
-  const USDR = await ethers.getContractFactory("USDRToken");
-  const MockStablecoin = await ethers.getContractFactory("MockStablecoin");
-  const Router = await ethers.getContractFactory("RotatingVaultRouter");
-  const RBT = await ethers.getContractFactory("RealEstateBackedToken");
-  const Manager = await ethers.getContractFactory("RBTSeriesManager");
-  const OrderBook = await ethers.getContractFactory("RBTOrderBook");
-
-  let usdtAddress = process.env.USDT_ADDRESS;
-  let usdcAddress = process.env.USDC_ADDRESS;
-
-  // Guard against silently overwriting real stablecoins with throwaway mocks
-  // (MockStablecoin.mint is unrestricted). If mocks are forced while real
-  // addresses are also supplied, that is contradictory — fail loudly instead of
-  // wiring the deployment to worthless tokens.
-  if (deployMockStables && (usdtAddress || usdcAddress)) {
-    throw new Error(
-      "DEPLOY_MOCK_STABLES=true but USDT_ADDRESS/USDC_ADDRESS were also provided. " +
-        "Refusing to overwrite real stablecoin addresses with mocks. " +
-        "Unset the real addresses to use mocks, or unset DEPLOY_MOCK_STABLES.",
-    );
+  const deployed = {};
+  async function deploy(name, args = []) {
+    const f = await ethers.getContractFactory(name);
+    const c = await f.deploy(...args);
+    await c.waitForDeployment();
+    const addr = await c.getAddress();
+    deployed[name] = addr;
+    console.log(`  ${name} -> ${addr}`);
+    return c;
   }
 
-  if (deployMockStables || (!usdtAddress && !usdcAddress)) {
-    const mockUsdt = await MockStablecoin.deploy("Tether USD", "USDT", 6);
-    const mockUsdc = await MockStablecoin.deploy("USD Coin", "USDC", 6);
-    await mockUsdt.waitForDeployment();
-    await mockUsdc.waitForDeployment();
-    usdtAddress = mockUsdt.target;
-    usdcAddress = mockUsdc.target;
+  // 1) stablecoins (testnet mocks) or external addresses
+  let usdcAddr = env("USDC_ADDRESS");
+  let usdtAddr = env("USDT_ADDRESS");
+  if (deployMocks) {
+    const usdc = await deploy("MockERC20", ["USD Coin", "USDC", 6]);
+    const usdt = await deploy("MockERC20", ["Tether USD", "USDT", 6]);
+    usdcAddr = await usdc.getAddress();
+    usdtAddr = await usdt.getAddress();
   }
 
-  if (!usdtAddress || !usdcAddress) {
-    requireEnv("USDT_ADDRESS");
-    requireEnv("USDC_ADDRESS");
-  }
+  // 2) tokens
+  const usdr = await deploy("USDR", [admin, usdrInitial, treasury]);
+  const rbt = await deploy("RBT", [admin, baseUri]);
+  const wft = await deploy("WFT", [admin, wftCap]);
 
-  const wftCap = BigInt(process.env.WFT_CAP || "1000000000000000000000000000");
-  const wftInitialTreasuryMint = BigInt(
-    process.env.WFT_INITIAL_TREASURY_MINT || "0",
-  );
-  const usdrInitialSupply = BigInt(process.env.USDR_INITIAL_SUPPLY || "0");
+  // 3) KYC + RWA
+  const kyc = await deploy("KycRegistry", [admin]);
+  const series = await deploy("SeriesManager", [admin, await rbt.getAddress(), await kyc.getAddress()]);
+  const income = await deploy("IncomeDistributor", [admin]);
 
-  const wft = await WFT.deploy(admin, treasury, wftCap, wftInitialTreasuryMint);
-  const usdr = await USDR.deploy(admin, treasury, usdrInitialSupply);
-  const interestRouter = await Router.deploy(admin);
-  const redemptionRouter = await Router.deploy(admin);
-  const rbt = await RBT.deploy(admin, fallbackUri);
-  const manager = await Manager.deploy(
-    admin,
-    rbt.target,
-    interestRouter.target,
-    redemptionRouter.target,
-  );
-  const orderBook = await OrderBook.deploy(admin, rbt.target, manager.target);
-
-  await Promise.all([
-    wft.waitForDeployment(),
-    usdr.waitForDeployment(),
-    interestRouter.waitForDeployment(),
-    redemptionRouter.waitForDeployment(),
-    rbt.waitForDeployment(),
-    manager.waitForDeployment(),
-    orderBook.waitForDeployment(),
+  // 4) markets
+  const spot = await deploy("SpotExchange", [
+    admin, await rbt.getAddress(), usdcAddr, await kyc.getAddress(), feeTreasury, spotFeeBps,
+  ]);
+  const nav = await deploy("NavOracle", [admin, navMaxDevBps, navMaxStale]);
+  const insurance = await deploy("InsuranceFund", [admin, await usdr.getAddress()]);
+  const perp = await deploy("PerpClearing", [
+    admin, await usdr.getAddress(), await nav.getAddress(), await insurance.getAddress(),
   ]);
 
-  await (await interestRouter.createVault(usdtAddress, true)).wait();
-  await (await interestRouter.createVault(usdcAddress, true)).wait();
-  await (await redemptionRouter.createVault(usdtAddress, true)).wait();
-  await (await redemptionRouter.createVault(usdcAddress, true)).wait();
+  // 5) TGE (paused)
+  const wftClaim = await deploy("WftClaim", [admin, await wft.getAddress()]);
 
-  const managerRole = await rbt.MANAGER_ROLE();
-  await (await rbt.grantRole(managerRole, manager.target)).wait();
-  await (await rbt.setLifecycleManager(manager.target)).wait();
+  // ---- wiring (deployer must hold DEFAULT_ADMIN_ROLE == admin) ----
+  console.log("Wiring roles & gates...");
+  await (await rbt.grantRole(R.MANAGER, await series.getAddress())).wait();
+  await (await rbt.setGate(await series.getAddress())).wait();
+  await (await rbt.setGateExempt(await spot.getAddress(), true)).wait();
+  await (await insurance.grantRole(R.DRAWER, await perp.getAddress())).wait();
 
-  const treasuryFunderRole = ethers.keccak256(
-    ethers.toUtf8Bytes("TREASURY_FUNDER_ROLE"),
-  );
-  const claimsManagerRole = ethers.keccak256(
-    ethers.toUtf8Bytes("CLAIMS_MANAGER_ROLE"),
-  );
-  await (
-    await interestRouter.grantRole(treasuryFunderRole, manager.target)
-  ).wait();
-  await (
-    await interestRouter.grantRole(claimsManagerRole, manager.target)
-  ).wait();
-  await (
-    await redemptionRouter.grantRole(treasuryFunderRole, manager.target)
-  ).wait();
-  await (
-    await redemptionRouter.grantRole(claimsManagerRole, manager.target)
-  ).wait();
+  // grant backend operator its operational roles (if distinct from admin)
+  if (operator.toLowerCase() !== admin.toLowerCase()) {
+    await (await kyc.grantRole(R.KYC_MANAGER, operator)).wait();
+    await (await series.grantRole(R.OPERATOR, operator)).wait();
+    await (await series.grantRole(R.TREASURY_FUNDER, operator)).wait();
+    await (await series.grantRole(R.DELINQUENCY_MANAGER, operator)).wait();
+    await (await income.grantRole(R.DISTRIBUTION_MANAGER, operator)).wait();
+    await (await spot.grantRole(R.SETTLEMENT, operator)).wait();
+    await (await nav.grantRole(R.ORACLE_PUBLISHER, operator)).wait();
+    await (await perp.grantRole(R.SETTLEMENT, operator)).wait();
+    await (await perp.grantRole(R.FUNDING, operator)).wait();
+    await (await perp.grantRole(R.LIQUIDATOR, operator)).wait();
+    await (await perp.grantRole(R.MARKET_ADMIN, operator)).wait();
+    console.log(`  granted operator roles to ${operator}`);
+  }
 
-  // Exempt the order book from the manager's transfer gate so makers can always
-  // reclaim escrow (fills remain gated inside the order book itself).
-  await (await manager.setTradingVenue(orderBook.target, true)).wait();
-
-  const deployment = {
+  // ---- manifest ----
+  const manifest = {
     network: networkName,
     chainId,
     deployedAt: new Date().toISOString(),
     deployer: deployer.address,
     admin,
     treasury,
-    stablecoins: {
-      usdt: usdtAddress,
-      usdc: usdcAddress,
-    },
+    feeTreasury,
+    operator,
+    stablecoins: { usdc: usdcAddr, usdt: usdtAddr },
     contracts: {
-      wft: wft.target,
-      usdr: usdr.target,
-      interestRouter: interestRouter.target,
-      redemptionRouter: redemptionRouter.target,
-      rbt: rbt.target,
-      rbtSeriesManager: manager.target,
-      rbtOrderBook: orderBook.target,
+      usdr: await usdr.getAddress(),
+      rbt: await rbt.getAddress(),
+      wft: await wft.getAddress(),
+      kycRegistry: await kyc.getAddress(),
+      seriesManager: await series.getAddress(),
+      incomeDistributor: await income.getAddress(),
+      spotExchange: await spot.getAddress(),
+      navOracle: await nav.getAddress(),
+      insuranceFund: await insurance.getAddress(),
+      perpClearing: await perp.getAddress(),
+      wftClaim: await wftClaim.getAddress(),
     },
+    params: { navMaxDevBps, navMaxStale, spotFeeBps },
   };
 
-  const outputDir = path.join(process.cwd(), "deployments");
-  await fs.mkdir(outputDir, { recursive: true });
-  const outputFile = path.join(outputDir, `${networkName}.json`);
-  await fs.writeFile(outputFile, `${JSON.stringify(deployment, null, 2)}\n`);
+  const outDir = path.resolve("deployments");
+  await fs.mkdir(outDir, { recursive: true });
+  await fs.writeFile(path.join(outDir, `${networkName}.json`), JSON.stringify(manifest, null, 2));
+  console.log(`Manifest -> deployments/${networkName}.json`);
 
-  console.log("Deployment completed");
-  console.table({
-    wft: wft.target,
-    usdr: usdr.target,
-    usdt: usdtAddress,
-    usdc: usdcAddress,
-    interestRouter: interestRouter.target,
-    redemptionRouter: redemptionRouter.target,
-    rbt: rbt.target,
-    rbtSeriesManager: manager.target,
-    rbtOrderBook: orderBook.target,
-  });
-  console.log(`Saved deployment manifest to ${outputFile}`);
+  // ---- ABI export ----
+  const abiDir = path.resolve("abis");
+  await fs.mkdir(abiDir, { recursive: true });
+  const abiNames = [
+    "USDR", "RBT", "WFT", "KycRegistry", "SeriesManager", "IncomeDistributor",
+    "SpotExchange", "NavOracle", "InsuranceFund", "PerpClearing", "WftClaim", "MockERC20",
+  ];
+  for (const n of abiNames) {
+    const f = await ethers.getContractFactory(n);
+    await fs.writeFile(path.join(abiDir, `${n}.json`), f.interface.formatJson());
+  }
+  console.log(`ABIs -> abis/ (${abiNames.length} contracts)`);
+  console.log("Done.");
 }
 
-main().catch((error) => {
-  console.error(error);
+main().catch((e) => {
+  console.error(e);
   process.exitCode = 1;
 });
