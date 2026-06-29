@@ -1,135 +1,69 @@
-# WeBlock Token Suite
+# WeBlock Contracts (greenfield)
 
-Avalanche Subnet EVM 환경에서 사용할 위블록 토큰/상품 발행 컨트랙트 프로젝트입니다. 이 저장소는 아래 세 가지 축을 분리해서 설계했습니다.
+Solidity contract suite for the WeBlock RWA platform: fractional real-estate tokens (RBT),
+a USD settlement stablecoin (USDR), a governance/loyalty token (WFT), monthly rent distribution,
+an off-chain-matched spot market, and non-custodial perpetual futures.
 
-1. `RBT` : 부동산 매출채권 기반 조각 투자 권리를 나타내는 ERC-1155
-2. `WFT` : 위블록 재단 거버넌스와 마케팅 보상용 ERC-20
-3. `USDR` : 위블록 재단 스테이블 코인 ERC-20
+Full design: [`../docs/build/01_CONTRACTS_SPEC.md`](../docs/build/01_CONTRACTS_SPEC.md).
 
-추가로 RBT 운영을 위해 아래 모듈을 함께 제공합니다.
+## Stack
+Hardhat 3 · Solidity 0.8.28 (viaIR, optimizer 200, Cancun) · OpenZeppelin v5 · ethers v6 · pnpm.
 
-1. `RBTSeriesManager` : 차수 생성, 모집, 활성화, 이자 배분, 만기/디폴트/상환 처리
-2. `RotatingVaultRouter` : 이자금/상환금 트레저리 라우터 및 볼트 교체
-3. `RBTOrderBook` : 유저 간 RBT 2차 거래용 온체인 오더북
-4. `RealEstateBackedToken` : RBT ERC-1155 토큰 본체
+## Architecture
+- **tokens/** — `USDR` (ERC20, 6dp), `RBT` (ERC1155, one id per property series, KYC/state transfer gate), `WFT` (ERC20Votes, capped, lock schedules).
+- **rwa/** — `KycRegistry` (on-chain allowlist), `SeriesManager` (primary sale + lifecycle + redemption + the RBT transfer gate), `IncomeDistributor` (Merkle monthly rent).
+- **markets/** — `SpotExchange` (EIP-712, off-chain matched, on-chain atomic settle), `NavOracle` (operator NAV mark/index), `InsuranceFund`, `PerpClearing` (non-custodial isolated perps).
+- **tge/** — `WftClaim` (Merkle + vesting, paused behind legal gate).
 
-## 왜 이렇게 분리했는가
+Design choices: immutable contracts (no proxies; redeploy+migrate), per-contract `AccessControl`,
+SafeERC20, ReentrancyGuard, one EIP-712 domain per market contract, events for the backend indexer.
+WBP (loyalty points) is intentionally **off-chain** (backend DB ledger), not a token here.
 
-- 토큰 본체와 운영 로직을 분리해 감사 범위를 명확하게 유지합니다.
-- 이자금/상환금 트레저리를 회전 가능한 볼트로 분리해 보안사고 대응과 키 교체가 쉽습니다.
-- 주문 체결 모듈을 RBT 코어와 분리해, 향후 오프체인 매칭 엔진으로 교체해도 핵심 권리 로직은 유지됩니다.
-- 업그레이더블 프록시를 쓰지 않아 저장소 레이아웃/초기화 실수 리스크를 줄였습니다.
-
-## 디렉터리
-
-- `contracts/tokens` : WFT, USDR, RBT 토큰 컨트랙트
-- `contracts/rbt` : RBT 발행/이자/상환/오더북 컨트랙트
-- `contracts/shared` : 공용 role / error 정의
-- `contracts/interfaces` : 토큰-매니저 인터페이스
-- `test` : 핵심 흐름 테스트
-- `scripts` : 배포 및 차수 생성 스크립트
-- `docs` : 감사용 문서, 운영 문서, 비개발자용 설명서
-
-## 빠른 시작
-
+## Quick start
 ```bash
-cd /Users/shchoi/Documents/weblock/weblock-token
 pnpm install
 pnpm compile
-pnpm test
+pnpm test            # 11 tests: tokens, RBT lifecycle, income merkle, spot, perp, TGE
+pnpm deploy:fuji     # deploy + wire + write deployments/fuji.json + export abis/
 ```
 
-## 배포
+### Env (`.env`)
+```
+DEPLOYER_PRIVATE_KEY=0x...        # funded with test AVAX on Fuji
+FUJI_RPC_URL=https://api.avax-test.network/ext/bc/C/rpc
+ADMIN_ADDRESS=0x...               # defaults to deployer
+BACKEND_OPERATOR_ADDRESS=0x...    # backend signer; granted settlement/oracle/kyc roles (defaults to deployer)
+DEPLOY_MOCK_STABLES=true          # deploy mock USDC/USDT on testnet
+```
 
-1. `.env.example`를 복사해 `.env`를 만듭니다.
-2. Avalanche Subnet RPC, 배포자 키, 관리자 주소, 스테이블 코인 주소를 채웁니다.
-3. 아래 명령으로 배포합니다.
+## Live deployment — Avalanche Fuji (43113)
+Source of truth: [`deployments/fuji.json`](deployments/fuji.json) (consumed by backend config + wallet SDK).
 
+| Contract | Address |
+|---|---|
+| USDR | `0x339995DdB41166cC20fd4e82E2817b4ddBE16Be4` |
+| RBT | `0x9F9A517E7d56d8F986fAc361896891f79E4E7f77` |
+| WFT | `0xadb62479E9d2914d1f1eB743Af9Ea69b9481933b` |
+| KycRegistry | `0x08F176f989CBe45FAf0240F9C449dF6f14E7EC7D` |
+| SeriesManager | `0xf3DBB781b5366255C58F25837Afb282D2257a55F` |
+| IncomeDistributor | `0x9212525570eD0800899262B5b19EDC5da74ADcFC` |
+| SpotExchange | `0x217C187ec99e1EcaBD80386403127A86D23340e0` |
+| NavOracle | `0x078A5A64504d329a92701B3E2b86B57a62351013` |
+| InsuranceFund | `0x94c26d6c06783e3A59b8844529715479eD58f685` |
+| PerpClearing | `0x67a55155E61Ca2932Ac1b4Ad1B62CdeA16CF1f3c` |
+| WftClaim (paused) | `0x3ff6A045D2aaED025D558e7Cf3b8fFa0fa10681c` |
+
+Seed an operable state (KYC, launch series, perp market, NAV):
 ```bash
-pnpm hardhat run scripts/deploy.js --network avalancheSubnet
+npx hardhat run scripts/seed-fuji.js --network fuji
 ```
 
-배포 결과는 `deployments/<network>.json`에 저장됩니다.
+## Security status
+**Pre-audit, testnet only.** External audit mandatory before mainnet (priority-1: `PerpClearing`,
+`NavOracle`, liquidation, `InsuranceFund`). Perp V1 is isolated-margin, no single-fill flips,
+pool-balanced approximate funding. `WftClaim` is paused pending legal sign-off.
 
-## 차수 개설 예시
-
-RBT는 하나의 부동산에 대해 `A-1`, `A-2`, `A-3`처럼 여러 차수를 발행할 수 있습니다.
-
-예시:
-
-- 자산 가치: 60억 원
-- 차수 규모: 1억 원
-- 조각 가격: 1만 원
-- 발행 조각 수: 10,000개
-
-실행 순서:
-
-```bash
-pnpm hardhat run scripts/create-series.js --network avalancheSubnet
-```
-
-필수 환경 변수:
-
-- `RBT_MANAGER_ADDRESS`
-- `TOKEN_ID`
-- `PROPERTY_CODE`
-- `PROPERTY_NAME`
-- `ROUND_NUMBER`
-- `ROUND_LABEL`
-- `MAX_SUPPLY`
-- `SALE_START`
-- `SALE_END`
-- `MATURITY_DATE`
-- `ISSUER_TREASURY`
-- `PAYMENT_TOKENS`
-- `UNIT_PRICES`
-
-## 테스트 범위
-
-현재 테스트는 아래 흐름을 검증합니다.
-
-1. WFT lock / revoke / airdrop
-2. USDR mint / pause / transfer
-3. RBT 모집 -> 판매 완료 -> 이자 배분 -> 만기 -> 상환
-4. 볼트 교체 후에도 기존 시리즈 이자 청구 유지
-5. 연체 상태에서 2차 거래 차단 및 cure 후 재개
-6. 온체인 ask / bid 오더북 체결
-7. 판매 취소 후 환불
-8. 만기일 이전 premature maturity 차단
-
-## 문서 목록
-
-- [시나리오 카탈로그](./docs/SCENARIO_CATALOG.md)
-- [아키텍처 문서](./docs/ARCHITECTURE.md)
-- [감사 범위와 체크리스트](./docs/AUDIT_SCOPE.md)
-- [위협 모델](./docs/THREAT_MODEL.md)
-- [운영 절차](./docs/OPERATIONS.md)
-- [함수 설명서](./docs/FUNCTION_REFERENCE.md)
-- [비개발자용 설명서](./docs/NON_TECHNICAL_GUIDE.md)
-
-## 시나리오 실행 스크립트
-
-### RBT 운영 액션
-
-```bash
-ACTION=series-info \
-RBT_MANAGER_ADDRESS=0xManager \
-TOKEN_ID=1 \
-pnpm rbt:action
-```
-
-### 재단 토큰 액션
-
-```bash
-ACTION=wft-mint \
-WFT_ADDRESS=0xWft \
-RECIPIENT=0xRecipient \
-AMOUNT=1000000000000000000 \
-pnpm foundation:action
-```
-
-## 운영상 주의
-
-- `RBTOrderBook`는 고빈도 CEX 스타일 매칭 엔진이 아니라, 저빈도 실물자산 거래를 위한 온체인 체결 보조 모듈입니다.
-- 이자/상환 비율은 정수 나눗셈으로 계산되므로 소량의 dust가 남을 수 있습니다. 운영팀은 잔여 자산 정산 정책을 별도로 가져가야 합니다.
-- 본 프로젝트는 비업그레이더블 기본 설계입니다. 차후 요구가 늘면 새 버전을 배포하고 자산을 마이그레이션하는 절차를 권장합니다.
+## EIP-712 / Merkle (parity reference for backend + frontend)
+- Spot domain `WeBlockSpot` v1 · `Order(address trader,uint256 marketId,bool isBuy,uint256 price,uint256 amount,uint256 nonce,uint256 expiry)`
+- Perp domain `WeBlockPerp` v1 · `Order(address trader,uint256 marketId,bool isBuy,uint256 price,uint256 amount,uint256 marginBps,uint256 nonce,uint256 expiry,bool reduceOnly)`
+- Merkle leaf `keccak256(bytes.concat(keccak256(abi.encode(...))))`, sorted-pair nodes (OZ MerkleProof).
