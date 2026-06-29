@@ -332,3 +332,138 @@ describe("WeBlock greenfield suite", () => {
     });
   });
 });
+
+describe("WeBlock edge cases", () => {
+  async function activeSeriesWithHolders() {
+    const s = await deploySuite();
+    await s.kyc.setVerified(s.alice.address, true);
+    await s.kyc.setVerified(s.bob.address, true);
+    await s.series.createSeries(1, s.issuer.address, 0, 9_999_999_999n, 9_999_999_999n, 10_000_000n, 1000, true, [s.usdc.target]);
+    await s.series.openSale(1);
+    await s.usdc.connect(s.alice).approve(s.series.target, 1_000_000_000n);
+    await s.series.connect(s.alice).buy(1, s.usdc.target, 20);
+    await s.series.finalizeSale(1);
+    return s;
+  }
+
+  it("buy without KYC reverts", async () => {
+    const s = await deploySuite();
+    await s.series.createSeries(1, s.issuer.address, 0, 9_999_999_999n, 9_999_999_999n, 10_000_000n, 1000, true, [s.usdc.target]);
+    await s.series.openSale(1);
+    await s.usdc.connect(s.alice).approve(s.series.target, 1_000_000_000n);
+    await expectRevert(s.series.connect(s.alice).buy(1, s.usdc.target, 1)); // not KYC'd
+  });
+
+  it("delinquent series blocks secondary transfer; cure restores it", async () => {
+    const s = await activeSeriesWithHolders();
+    await s.series.markDelinquent(1);
+    await expectRevert(s.rbt.connect(s.alice).safeTransferFrom(s.alice.address, s.bob.address, 1, 1, "0x"));
+    await s.series.cure(1);
+    await s.rbt.connect(s.alice).safeTransferFrom(s.alice.address, s.bob.address, 1, 1, "0x");
+    expect(await s.rbt.balanceOf(s.bob.address, 1)).to.equal(1n);
+  });
+
+  it("redeem before maturity reverts", async () => {
+    const s = await activeSeriesWithHolders();
+    await expectRevert(s.series.connect(s.alice).redeem(1, 1));
+  });
+
+  it("spot: expired order, self-trade, and invalidated nonce all revert", async () => {
+    const s = await activeSeriesWithHolders();
+    await s.rbt.connect(s.alice).setApprovalForAll(s.spot.target, true);
+    await s.usdc.connect(s.bob).approve(s.spot.target, 1_000_000_000n);
+    const domain = { name: "WeBlockSpot", version: "1", chainId: s.chainId, verifyingContract: s.spot.target };
+    const types = { Order: [
+      { name: "trader", type: "address" }, { name: "marketId", type: "uint256" },
+      { name: "isBuy", type: "bool" }, { name: "price", type: "uint256" },
+      { name: "amount", type: "uint256" }, { name: "nonce", type: "uint256" }, { name: "expiry", type: "uint256" },
+    ]};
+    const price = 12_000_000n;
+    // expired sell
+    const expSell = { trader: s.alice.address, marketId: 1n, isBuy: false, price, amount: 2n, nonce: 1n, expiry: 1n };
+    const buy = { trader: s.bob.address, marketId: 1n, isBuy: true, price, amount: 2n, nonce: 1n, expiry: 9_999_999_999n };
+    const expSellSig = await s.alice.signTypedData(domain, types, expSell);
+    const buySig = await s.bob.signTypedData(domain, types, buy);
+    await expectRevert(s.spot.settle(buy, buySig, expSell, expSellSig, 2n, price)); // expired
+
+    // self-trade (same trader both sides)
+    const selfBuy = { trader: s.alice.address, marketId: 1n, isBuy: true, price, amount: 2n, nonce: 2n, expiry: 9_999_999_999n };
+    const selfSell = { trader: s.alice.address, marketId: 1n, isBuy: false, price, amount: 2n, nonce: 3n, expiry: 9_999_999_999n };
+    await expectRevert(s.spot.settle(
+      selfBuy, await s.alice.signTypedData(domain, types, selfBuy),
+      selfSell, await s.alice.signTypedData(domain, types, selfSell), 2n, price));
+
+    // invalidated nonce on the seller
+    const sell = { trader: s.alice.address, marketId: 1n, isBuy: false, price, amount: 2n, nonce: 9n, expiry: 9_999_999_999n };
+    await s.spot.connect(s.alice).invalidateNonce(9n);
+    await expectRevert(s.spot.settle(buy, buySig, sell, await s.alice.signTypedData(domain, types, sell), 2n, price));
+  });
+
+  it("perp: reduce-only on a fresh position reverts; partial close realizes proportional PnL", async () => {
+    const s = await deploySuite();
+    await s.perp.createMarket(1, 2000, 1000, 0, 0, 200); // zero fees for clean accounting
+    const t0 = (await s.ethers.provider.getBlock("latest")).timestamp;
+    await s.nav.publish(1, 100_000_000n, BigInt(t0));
+    await s.usdr.connect(s.alice).approve(s.perp.target, 100_000_000n);
+    await s.usdr.connect(s.bob).approve(s.perp.target, 100_000_000n);
+    await s.perp.connect(s.alice).deposit(100_000_000n);
+    await s.perp.connect(s.bob).deposit(100_000_000n);
+    const d = { name: "WeBlockPerp", version: "1", chainId: s.chainId, verifyingContract: s.perp.target };
+    const types = { Order: [
+      { name: "trader", type: "address" }, { name: "marketId", type: "uint256" },
+      { name: "isBuy", type: "bool" }, { name: "price", type: "uint256" }, { name: "amount", type: "uint256" },
+      { name: "marginBps", type: "uint256" }, { name: "nonce", type: "uint256" }, { name: "expiry", type: "uint256" },
+      { name: "reduceOnly", type: "bool" },
+    ]};
+    const price = 100_000_000n;
+    // reduce-only opening order must revert
+    const ro = { trader: s.alice.address, marketId: 1n, isBuy: true, price, amount: 2n, marginBps: 5000n, nonce: 1n, expiry: 9_999_999_999n, reduceOnly: true };
+    const cp = { trader: s.bob.address, marketId: 1n, isBuy: false, price, amount: 2n, marginBps: 5000n, nonce: 1n, expiry: 9_999_999_999n, reduceOnly: false };
+    await expectRevert(s.perp.settleTrades(ro, await s.alice.signTypedData(d, types, ro), cp, await s.bob.signTypedData(d, types, cp), 2n, price));
+
+    // open alice long 2 @100 with 50% margin (=100 margin), bob short
+    const aOpen = { trader: s.alice.address, marketId: 1n, isBuy: true, price, amount: 2n, marginBps: 5000n, nonce: 2n, expiry: 9_999_999_999n, reduceOnly: false };
+    const bOpen = { trader: s.bob.address, marketId: 1n, isBuy: false, price, amount: 2n, marginBps: 5000n, nonce: 2n, expiry: 9_999_999_999n, reduceOnly: false };
+    await s.perp.settleTrades(aOpen, await s.alice.signTypedData(d, types, aOpen), bOpen, await s.bob.signTypedData(d, types, bOpen), 2n, price);
+    let ap = await s.perp.getPosition(1, s.alice.address);
+    expect(ap.size).to.equal(2n);
+    expect(ap.margin).to.equal(100_000_000n); // 50% of 200 notional
+
+    // partial close 1 unit at 120 (profit 20 on 1 unit); reduceOnly sell
+    const p2 = 120_000_000n;
+    const aClose = { trader: s.alice.address, marketId: 1n, isBuy: false, price: p2, amount: 1n, marginBps: 5000n, nonce: 3n, expiry: 9_999_999_999n, reduceOnly: true };
+    const bClose = { trader: s.bob.address, marketId: 1n, isBuy: true, price: p2, amount: 1n, marginBps: 5000n, nonce: 3n, expiry: 9_999_999_999n, reduceOnly: true };
+    const freeBefore = await s.perp.freeCollateral(s.alice.address);
+    await s.perp.settleTrades(bClose, await s.bob.signTypedData(d, types, bClose), aClose, await s.alice.signTypedData(d, types, aClose), 1n, p2);
+    ap = await s.perp.getPosition(1, s.alice.address);
+    expect(ap.size).to.equal(1n); // half closed
+    // released margin (50) + pnl(+20) = 70 returned to free collateral
+    const freeAfter = await s.perp.freeCollateral(s.alice.address);
+    expect(freeAfter - freeBefore).to.equal(70_000_000n);
+  });
+
+  it("perp: cannot withdraw collateral locked in a position", async () => {
+    const s = await deploySuite();
+    await s.perp.createMarket(1, 2000, 1000, 0, 0, 200);
+    const t0 = (await s.ethers.provider.getBlock("latest")).timestamp;
+    await s.nav.publish(1, 100_000_000n, BigInt(t0));
+    await s.usdr.connect(s.alice).approve(s.perp.target, 100_000_000n);
+    await s.usdr.connect(s.bob).approve(s.perp.target, 100_000_000n);
+    await s.perp.connect(s.alice).deposit(100_000_000n);
+    await s.perp.connect(s.bob).deposit(100_000_000n);
+    const d = { name: "WeBlockPerp", version: "1", chainId: s.chainId, verifyingContract: s.perp.target };
+    const types = { Order: [
+      { name: "trader", type: "address" }, { name: "marketId", type: "uint256" },
+      { name: "isBuy", type: "bool" }, { name: "price", type: "uint256" }, { name: "amount", type: "uint256" },
+      { name: "marginBps", type: "uint256" }, { name: "nonce", type: "uint256" }, { name: "expiry", type: "uint256" },
+      { name: "reduceOnly", type: "bool" },
+    ]};
+    const price = 100_000_000n;
+    const aOpen = { trader: s.alice.address, marketId: 1n, isBuy: true, price, amount: 1n, marginBps: 5000n, nonce: 1n, expiry: 9_999_999_999n, reduceOnly: false };
+    const bOpen = { trader: s.bob.address, marketId: 1n, isBuy: false, price, amount: 1n, marginBps: 5000n, nonce: 1n, expiry: 9_999_999_999n, reduceOnly: false };
+    await s.perp.settleTrades(aOpen, await s.alice.signTypedData(d, types, aOpen), bOpen, await s.bob.signTypedData(d, types, bOpen), 1n, price);
+    // 50 locked as margin, 50 free; withdrawing 60 must revert
+    await expectRevert(s.perp.connect(s.alice).withdraw(60_000_000n));
+    await s.perp.connect(s.alice).withdraw(50_000_000n); // exactly free ok
+  });
+});
