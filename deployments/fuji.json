@@ -1,0 +1,32 @@
+{
+  "network": "fuji",
+  "chainId": 43113,
+  "deployedAt": "2026-06-29T17:23:49.783Z",
+  "deployer": "0xC4C47A2373418E210CE171bfb389FC8d2Dfe6229",
+  "admin": "0xC4C47A2373418E210CE171bfb389FC8d2Dfe6229",
+  "treasury": "0xC4C47A2373418E210CE171bfb389FC8d2Dfe6229",
+  "feeTreasury": "0xC4C47A2373418E210CE171bfb389FC8d2Dfe6229",
+  "operator": "0xC4C47A2373418E210CE171bfb389FC8d2Dfe6229",
+  "stablecoins": {
+    "usdc": "0x6Ad718292eD110513bEFC459A74f37bBE6D59862",
+    "usdt": "0xFF90e9A716E31990ddF5bA80C861E18b4498E140"
+  },
+  "contracts": {
+    "usdr": "0x339995DdB41166cC20fd4e82E2817b4ddBE16Be4",
+    "rbt": "0x9F9A517E7d56d8F986fAc361896891f79E4E7f77",
+    "wft": "0xadb62479E9d2914d1f1eB743Af9Ea69b9481933b",
+    "kycRegistry": "0x08F176f989CBe45FAf0240F9C449dF6f14E7EC7D",
+    "seriesManager": "0xf3DBB781b5366255C58F25837Afb282D2257a55F",
+    "incomeDistributor": "0x9212525570eD0800899262B5b19EDC5da74ADcFC",
+    "spotExchange": "0x217C187ec99e1EcaBD80386403127A86D23340e0",
+    "navOracle": "0x078A5A64504d329a92701B3E2b86B57a62351013",
+    "insuranceFund": "0x94c26d6c06783e3A59b8844529715479eD58f685",
+    "perpClearing": "0x67a55155E61Ca2932Ac1b4Ad1B62CdeA16CF1f3c",
+    "wftClaim": "0x3ff6A045D2aaED025D558e7Cf3b8fFa0fa10681c"
+  },
+  "params": {
+    "navMaxDevBps": 2000,
+    "navMaxStale": 86400,
+    "spotFeeBps": 100
+  }
+}
