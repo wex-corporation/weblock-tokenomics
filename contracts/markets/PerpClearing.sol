@@ -74,6 +74,15 @@ contract PerpClearing is AccessControl, ReentrancyGuard, Pausable, EIP712 {
 
     uint256 public protocolFees;
     uint256 public collectedFunding; // pool of funding paid in, disbursed to receivers
+    /// @notice Max allowed deviation of a settlement fill price from the fresh oracle mark (H-1).
+    ///         Blocks a manipulated/operator-chosen fill price from manufacturing PnL whenever the
+    ///         oracle is live. 0 disables the band (falls back to signed-limit bounds only).
+    uint256 public maxFillDeviationBps = 1000; // 10%
+    /// @notice Cumulative bad debt the insurance fund could NOT cover (H-2). Surfaced for ops;
+    ///         grows only when InsuranceFund is underfunded during a loss/liquidation.
+    uint256 public totalUnbackedDebt;
+
+    event UnbackedDebt(uint256 indexed marketId, address indexed trader, uint256 amount, uint256 cumulative);
 
     event MarketCreated(uint256 indexed marketId);
     event Deposit(address indexed trader, uint256 amount);
@@ -134,6 +143,12 @@ contract PerpClearing is AccessControl, ReentrancyGuard, Pausable, EIP712 {
 
     function setMarketPaused(uint256 marketId, bool paused_) external onlyRole(Roles.MARKET_ADMIN_ROLE) {
         markets[marketId].paused = paused_;
+    }
+
+    /// @notice Set the settlement fill-price oracle band (bps). 0 disables it. (H-1)
+    function setMaxFillDeviationBps(uint256 bps) external onlyRole(Roles.MARKET_ADMIN_ROLE) {
+        if (bps > BPS) revert Errors.InvalidState();
+        maxFillDeviationBps = bps;
     }
 
     // ------------------------------------------------------------- funding
@@ -203,6 +218,17 @@ contract PerpClearing is AccessControl, ReentrancyGuard, Pausable, EIP712 {
         // price band: buyer.price >= fillPrice >= seller.price
         (uint256 buyPrice, uint256 sellPrice) = maker.isBuy ? (maker.price, taker.price) : (taker.price, maker.price);
         if (fillPrice > buyPrice || fillPrice < sellPrice) revert Errors.PriceCrossed();
+        // Oracle band (H-1): whenever the mark is fresh, the fill price must be within
+        // maxFillDeviationBps of it — so a manipulated/operator-chosen fill price cannot
+        // manufacture PnL out of the shared collateral pool. (Falls back to signed-limit
+        // bounds only when the oracle is stale/unset, to avoid a settlement DoS.)
+        if (maxFillDeviationBps != 0) {
+            (uint256 mark, bool fresh) = oracle.peekPrice(maker.marketId);
+            if (fresh && mark > 0) {
+                uint256 d = fillPrice > mark ? fillPrice - mark : mark - fillPrice;
+                if (d * 10_000 > mark * maxFillDeviationBps) revert Errors.PriceCrossed();
+            }
+        }
 
         bytes32 makerHash = _verify(maker, makerSig);
         bytes32 takerHash = _verify(taker, takerSig);
@@ -283,7 +309,7 @@ contract PerpClearing is AccessControl, ReentrancyGuard, Pausable, EIP712 {
                 uint256 fromMargin = loss > p.margin ? p.margin : loss;
                 p.margin -= fromMargin;
                 uint256 badDebt = loss - fromMargin;
-                if (badDebt > 0) insurance.cover(address(this), badDebt);
+                if (badDebt > 0) _coverBadDebt(marketId, trader, badDebt);
             }
             p.size = newSize;
             if (newSize == 0) {
@@ -322,11 +348,20 @@ contract PerpClearing is AccessControl, ReentrancyGuard, Pausable, EIP712 {
             uint256 remainder = eq - pen;
             if (remainder > 0) freeCollateral[trader] += remainder;
         } else {
-            uint256 badDebt = uint256(-equity);
-            insurance.cover(address(this), badDebt);
+            _coverBadDebt(marketId, trader, uint256(-equity));
         }
         delete positions[marketId][trader];
         emit Liquidated(marketId, trader, mark, equity);
+    }
+
+    /// @dev Draw bad debt from the insurance fund and record any uncovered shortfall (H-2).
+    function _coverBadDebt(uint256 marketId, address trader, uint256 badDebt) internal {
+        uint256 paid = insurance.cover(address(this), badDebt);
+        if (paid < badDebt) {
+            uint256 shortfall = badDebt - paid;
+            totalUnbackedDebt += shortfall;
+            emit UnbackedDebt(marketId, trader, shortfall, totalUnbackedDebt);
+        }
     }
 
     // ------------------------------------------------------------- views / admin

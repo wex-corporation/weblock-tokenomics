@@ -35,19 +35,33 @@ contract NavOracle is AccessControl {
         maxStalenessSecs = maxStalenessSecs_;
     }
 
+    /// @param timestamp Informational only (kept for ABI/back-compat). Staleness is anchored to
+    ///        `block.timestamp` so a publisher can neither fake freshness nor lock the feed at a
+    ///        far-future time (M-2). One publish per block also caps cumulative per-block deviation.
     function publish(uint256 marketId, uint256 price, uint64 timestamp) external onlyRole(Roles.ORACLE_PUBLISHER_ROLE) {
+        timestamp; // silence unused-parameter; real time is authoritative below
         if (price == 0) revert Errors.InvalidPrice();
         Feed storage f = feeds[marketId];
+        uint64 nowTs = uint64(block.timestamp);
         if (f.exists) {
-            if (timestamp <= f.updatedAt) revert Errors.StalePrice(); // monotonic
+            if (nowTs <= f.updatedAt) revert Errors.StalePrice(); // monotonic + 1 publish/block
             uint256 prev = f.price;
             uint256 diff = price > prev ? price - prev : prev - price;
             if (diff * 10_000 > prev * maxDeviationBps) revert Errors.DeviationTooHigh();
         }
         f.price = price;
-        f.updatedAt = timestamp;
+        f.updatedAt = nowTs;
         f.exists = true;
-        emit Published(marketId, price, timestamp);
+        emit Published(marketId, price, nowTs);
+    }
+
+    /// @notice Non-reverting read used by PerpClearing to band-check settlement fill prices.
+    /// @return price the last published price (0 if none)
+    /// @return fresh true if a price exists and is within the staleness window
+    function peekPrice(uint256 marketId) external view returns (uint256 price, bool fresh) {
+        Feed storage f = feeds[marketId];
+        if (!f.exists) return (0, false);
+        return (f.price, block.timestamp <= uint256(f.updatedAt) + maxStalenessSecs);
     }
 
     /// @notice Current mark price; reverts if missing or stale (circuit breaker).

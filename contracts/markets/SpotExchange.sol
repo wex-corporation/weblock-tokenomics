@@ -11,6 +11,13 @@ import {IERC1155} from "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import {Roles} from "../access/Roles.sol";
 import {Errors} from "../libraries/Errors.sol";
 import {IKycRegistry} from "../interfaces/IKycRegistry.sol";
+import {IRBTGate} from "../interfaces/IRBTGate.sol";
+
+/// @dev Reads the RBT secondary-transfer gate (SeriesManager) from the RBT token so the
+///      gate-exempt exchange can still enforce series-state/secondaryEnabled/both-KYC (H-3).
+interface IRBTGateSource {
+    function gate() external view returns (IRBTGate);
+}
 
 /// @title SpotExchange
 /// @notice Non-custodial, off-chain-matched RBT secondary market. Traders sign EIP-712 orders;
@@ -62,6 +69,7 @@ contract SpotExchange is AccessControl, ReentrancyGuard, EIP712 {
         if (admin == address(0) || rbt_ == address(0) || quote_ == address(0) || kyc_ == address(0) || feeTreasury_ == address(0)) {
             revert Errors.ZeroAddress();
         }
+        if (feeBps_ > 1000) revert Errors.InvalidState(); // L-6: cap fee at 10% at deploy too
         rbt = IERC1155(rbt_);
         quote = IERC20(quote_);
         kyc = IKycRegistry(kyc_);
@@ -98,6 +106,14 @@ contract SpotExchange is AccessControl, ReentrancyGuard, EIP712 {
         // crossable + fill price within both limits
         if (fillPrice > buy.price || fillPrice < sell.price) revert Errors.PriceCrossed();
         if (!kyc.isVerified(buy.trader)) revert Errors.NotKycVerified(buy.trader);
+        // H-3: the exchange is RBT-gate-exempt, so the rbt.safeTransferFrom below would skip the
+        // SeriesManager gate. Enforce it explicitly here so a frozen/delinquent/defaulted series,
+        // a series with secondaryEnabled=false, the primary-sale window, or a de-KYC'd seller can
+        // NOT be traded on spot — exactly the freeze the gate exists to provide.
+        IRBTGate gate = IRBTGateSource(address(rbt)).gate();
+        if (address(gate) != address(0)) {
+            gate.checkTransfer(address(this), sell.trader, buy.trader, buy.marketId, fillAmount);
+        }
 
         bytes32 buyHash = _verify(buy, buySig);
         bytes32 sellHash = _verify(sell, sellSig);

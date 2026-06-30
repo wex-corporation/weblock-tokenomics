@@ -402,6 +402,7 @@ describe("WeBlock edge cases", () => {
   it("perp: reduce-only on a fresh position reverts; partial close realizes proportional PnL", async () => {
     const s = await deploySuite();
     await s.perp.createMarket(1, 2000, 1000, 0, 0, 200); // zero fees for clean accounting
+    await s.perp.setMaxFillDeviationBps(0); // disable oracle band — this test exercises off-mark PnL
     const t0 = (await s.ethers.provider.getBlock("latest")).timestamp;
     await s.nav.publish(1, 100_000_000n, BigInt(t0));
     await s.usdr.connect(s.alice).approve(s.perp.target, 100_000_000n);
@@ -465,5 +466,66 @@ describe("WeBlock edge cases", () => {
     // 50 locked as margin, 50 free; withdrawing 60 must revert
     await expectRevert(s.perp.connect(s.alice).withdraw(60_000_000n));
     await s.perp.connect(s.alice).withdraw(50_000_000n); // exactly free ok
+  });
+
+  it("security H-1: settle rejects a fill price far from the fresh oracle mark", async () => {
+    const s = await deploySuite();
+    await s.perp.createMarket(1, 2000, 1000, 0, 0, 200);
+    const t0 = (await s.ethers.provider.getBlock("latest")).timestamp;
+    await s.nav.publish(1, 100_000_000n, BigInt(t0)); // mark = 100
+    await s.usdr.connect(s.alice).approve(s.perp.target, 100_000_000n);
+    await s.usdr.connect(s.bob).approve(s.perp.target, 100_000_000n);
+    await s.perp.connect(s.alice).deposit(100_000_000n);
+    await s.perp.connect(s.bob).deposit(100_000_000n);
+    const d = { name: "WeBlockPerp", version: "1", chainId: s.chainId, verifyingContract: s.perp.target };
+    const types = { Order: [
+      { name: "trader", type: "address" }, { name: "marketId", type: "uint256" },
+      { name: "isBuy", type: "bool" }, { name: "price", type: "uint256" }, { name: "amount", type: "uint256" },
+      { name: "marginBps", type: "uint256" }, { name: "nonce", type: "uint256" }, { name: "expiry", type: "uint256" },
+      { name: "reduceOnly", type: "bool" },
+    ]};
+    // both traders sign a wildly off-mark price (200 vs mark 100) — operator-manipulation attempt
+    const bad = 200_000_000n;
+    const a = { trader: s.alice.address, marketId: 1n, isBuy: true, price: bad, amount: 1n, marginBps: 5000n, nonce: 1n, expiry: 9_999_999_999n, reduceOnly: false };
+    const b = { trader: s.bob.address, marketId: 1n, isBuy: false, price: bad, amount: 1n, marginBps: 5000n, nonce: 1n, expiry: 9_999_999_999n, reduceOnly: false };
+    // crossable + within both signed limits, but >10% from the fresh mark → band rejects it
+    await expectRevert(s.perp.settleTrades(a, await s.alice.signTypedData(d, types, a), b, await s.bob.signTypedData(d, types, b), 1n, bad));
+  });
+
+  it("security M-1: IncomeDistributor caps claims at the round's own pool", async () => {
+    const s = await deploySuite();
+    const aAmt = 40_000_000n, bAmt = 40_000_000n; // tree sums to 80, but pool is only 50
+    const la = leaf2(s.alice.address, aAmt), lb = leaf2(s.bob.address, bAmt);
+    const { root, proofA, proofB } = tree2(la, lb);
+    await s.usdc.mint(s.admin.address, 50_000_000n);
+    await s.usdc.connect(s.admin).approve(s.income.target, 50_000_000n);
+    await s.income.openRound(1, s.usdc.target, root, 50_000_000n, 202606); // over-allocated root
+    await s.income.connect(s.alice).claim(1, aAmt, proofA); // 40 ok (<=50)
+    await expectRevert(s.income.connect(s.bob).claim(1, bAmt, proofB)); // would exceed pool → revert
+  });
+
+  it("security H-3: spot settle is blocked when the series is frozen (delinquent)", async () => {
+    const s = await deploySuite();
+    await s.kyc.setVerified(s.alice.address, true);
+    await s.kyc.setVerified(s.bob.address, true);
+    await s.series.createSeries(1, s.issuer.address, 0, 9_999_999_999n, 9_999_999_999n, 10_000_000n, 1000, true, [s.usdc.target]);
+    await s.series.openSale(1);
+    await s.usdc.connect(s.alice).approve(s.series.target, 1_000_000_000n);
+    await s.series.connect(s.alice).buy(1, s.usdc.target, 10);
+    await s.series.finalizeSale(1);
+    await s.rbt.connect(s.alice).setApprovalForAll(s.spot.target, true);
+    await s.usdc.connect(s.bob).approve(s.spot.target, 1_000_000_000n);
+    await s.series.markDelinquent(1); // freeze secondary trading
+    const domain = { name: "WeBlockSpot", version: "1", chainId: s.chainId, verifyingContract: s.spot.target };
+    const types = { Order: [
+      { name: "trader", type: "address" }, { name: "marketId", type: "uint256" },
+      { name: "isBuy", type: "bool" }, { name: "price", type: "uint256" },
+      { name: "amount", type: "uint256" }, { name: "nonce", type: "uint256" }, { name: "expiry", type: "uint256" },
+    ]};
+    const price = 12_000_000n;
+    const sell = { trader: s.alice.address, marketId: 1n, isBuy: false, price, amount: 5n, nonce: 1n, expiry: 9_999_999_999n };
+    const buy = { trader: s.bob.address, marketId: 1n, isBuy: true, price, amount: 5n, nonce: 1n, expiry: 9_999_999_999n };
+    // gate-exempt exchange must STILL refuse to dump the frozen asset
+    await expectRevert(s.spot.settle(buy, await s.bob.signTypedData(domain, types, buy), sell, await s.alice.signTypedData(domain, types, sell), 5n, price));
   });
 });

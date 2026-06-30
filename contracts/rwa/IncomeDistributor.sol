@@ -65,6 +65,11 @@ contract IncomeDistributor is AccessControl, ReentrancyGuard {
         bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(msg.sender, amount))));
         if (!MerkleProof.verify(proof, r.merkleRoot, leaf)) revert Errors.InvalidProof();
 
+        // Per-round solvency cap (M-1): a round can never pay out more than its own
+        // deposited pool, so an over-allocated/malicious Merkle root for one round can
+        // never drain the commingled balance funding other rounds.
+        if (r.claimed + amount > r.totalPool) revert Errors.InsufficientBalance();
+
         hasClaimed[roundId][msg.sender] = true;
         r.claimed += amount;
         IERC20(r.token).safeTransfer(msg.sender, amount);
