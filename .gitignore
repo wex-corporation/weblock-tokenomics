@@ -6,3 +6,6 @@ coverage.json
 .env
 .DS_Store
 .idea
+
+# testnet Safe manifest (contains owner B private key)
+deployments/fuji-safe.json
