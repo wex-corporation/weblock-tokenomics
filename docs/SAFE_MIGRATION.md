@@ -55,6 +55,19 @@ Safe가 `DEFAULT_ADMIN_ROLE`을 쥐면 운영 role도 언제든 회수/재부여
   - **2-of-2 서명 실행 = `grantRole(KYC_MANAGER, probe)` 성공**, role 반영 확인 ✓ (tx `0x4689be2b…`)
   - 결론: 배포된 Safe 2-of-2가 WeBlock AccessControl 거버넌스를 그대로 행사한다. 라이브 이관도 동일 경로.
 
+## 4b. ★필수 보안 조치 — operator 핫키의 MARKET_ADMIN revoke (adversarial 재검토 발견)
+
+DEFAULT_ADMIN을 Safe로 옮기는 것만으로는 **불충분**하다. `deploy.js`(라인 129)는 백엔드 operator(핫월렛)에게
+**PerpClearing `MARKET_ADMIN`**을 부여하고, 이 role은 `setMaxFillDeviationBps`(=H-1 오라클 안전 밴드),
+`createMarket`, `setMarketPaused`를 게이트한다. → 핫키 하나가 `setMaxFillDeviationBps(0)`을 호출해 오라클 밴드를 끄고
+signed-limit 내 임의 가격으로 PnL을 조작할 수 있다(하드닝 배포본 기준). **따라서 이관 시 operator에서
+PerpClearing `MARKET_ADMIN`을 반드시 revoke하고 Safe(또는 타임락)로만 보유**해야 한다.
+
+- 현재 Fuji 배포본은 **하드닝 이전(unhardened)**이라 `setMaxFillDeviationBps` 함수 자체가 없어 이 벡터는 **미노출**.
+  그러나 하드닝 소스로 메인넷/재배포하면 노출되므로 재배포 체크리스트의 하드블로커.
+- 참고: NavOracle `MARKET_ADMIN`(setParams)·SpotExchange `MARKET_ADMIN`(setFeeConfig)은 operator에 미부여라 안전.
+- `safe-transfer-admin.js`는 Safe에 grant(additive)만 하므로, operator revoke는 별도 스텝으로 수행(아래 절차 4단계에 포함).
+
 ## 5. 라이브 이관 절차 (팀 실행 — 보류 중)
 
 라이브 컨트랙트 권한 이관은 **되돌리기 어려운 거버넌스 변경**이라 자동 실행하지 않음(자동 모드 분류기도 보류).
