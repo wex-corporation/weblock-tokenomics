@@ -20,7 +20,8 @@
     "seed:mainnet": "hardhat run scripts/seed-mainnet.js --network avalanche",
     "safe:deploy:mainnet": "hardhat run scripts/deploy-safe.js --network avalanche",
     "safe:transfer:mainnet": "hardhat run scripts/safe-transfer-admin.js --network avalanche",
-    "roles:backfill:mainnet": "hardhat run scripts/grant-operator-roles.js --network avalanche"
+    "roles:backfill:mainnet": "hardhat run scripts/grant-operator-roles.js --network avalanche",
+    "mainnet": "./scripts/mainnet.sh"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.6.1",
