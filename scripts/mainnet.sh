@@ -10,13 +10,14 @@
 #   ./scripts/mainnet.sh keys       generate deployer + operator keypairs
 #   ./scripts/mainnet.sh check      read-only preflight (free)
 #   ./scripts/mainnet.sh deploy     deploy the 11 contracts + verify wiring
-#   ./scripts/mainnet.sh seed       create the launch series (mints nothing)
+#   ./scripts/mainnet.sh seed       on-chain-only series (see the warning; the
+#                                   admin console is normally the right path)
 #   ./scripts/mainnet.sh safe       create the governance Gnosis Safe
 #   ./scripts/mainnet.sh govern     hand admin to the Safe (EOA keeps access)
 #   ./scripts/mainnet.sh sync       propagate addresses to the other 3 repos
 #   ./scripts/mainnet.sh renounce   IRREVERSIBLE — EOA gives up admin
 #
-#   ./scripts/mainnet.sh all        check → safe → deploy → seed → govern → sync
+#   ./scripts/mainnet.sh all        check → safe → deploy → govern → sync
 #                                   stops before renounce, always
 #
 # The Safe is created before the contracts on purpose: USDR mints its initial
@@ -236,9 +237,23 @@ phase_deploy() {
 }
 
 phase_seed() {
-  head_ "Phase: seed"
+  head_ "Phase: seed — ${Y}usually the wrong tool${N}"
   load_env
   manifest_ready || die "nothing deployed yet — run: ./scripts/mainnet.sh deploy"
+
+  say ""
+  warn "This creates the series ON-CHAIN ONLY. It writes no product row, so the"
+  warn "series will not appear on the site and cannot be opened from the console."
+  say ""
+  say "  The admin console does the whole job instead — it calls the same"
+  say "  createSeries, AND stores the product (title, images, address, prices)"
+  say "  AND publishes it:"
+  say "    PATCH /v1/admin/products/{id}/rbt            map tokenId + terms"
+  say "    POST  /v1/admin/products/{id}/rbt/issue      createSeries on-chain"
+  say "    POST  /v1/admin/products/{id}/rbt/open-sale  openSale + publish"
+  say ""
+  say "  Use this phase only for a deliberately console-less series."
+  confirm_money "create an on-chain-only series with no product row"
 
   require_env SEED_TOKEN_ID SEED_PRICE SEED_MAX_SUPPLY SEED_SALE_END \
               SEED_MATURITY SEED_ISSUER_TREASURY SEED_NAV
@@ -422,8 +437,11 @@ phase_status() {
 
 phase_all() {
   say ""
-  say "${B}Running: check → safe → deploy → seed → govern → sync${N}"
+  say "${B}Running: check → safe → deploy → govern → sync${N}"
   say "Stops before renounce. That step is always run on its own."
+  say ""
+  say "Creating the first series is NOT part of this — do it from the admin"
+  say "console, which writes the database row too. See 'seed' for why."
   # The Safe comes FIRST. It has no dependency on the contracts (deploy-safe.js
   # never reads the deployment manifest), and the deploy needs its address:
   # USDR mints its entire initial supply to FOUNDATION_TREASURY_ADDRESS via a
@@ -432,7 +450,6 @@ phase_all() {
   phase_check
   phase_safe
   phase_deploy
-  phase_seed
   phase_govern
   phase_sync
   head_ "Done — everything up to the irreversible step"
