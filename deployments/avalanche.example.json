@@ -1,0 +1,32 @@
+{
+  "_comment": "TEMPLATE — the real file is written by scripts/deploy.js as deployments/avalanche.json. It is checked in here only so every consumer (backend yaml, frontend env, wallet SDK, sync tooling) can be wired and reviewed before the mainnet deploy actually happens. Every 0x0000...0001-style value is a placeholder.",
+  "network": "avalanche",
+  "chainId": 43114,
+  "deployedAt": "REPLACED_AT_DEPLOY",
+  "deployBlock": 0,
+  "deployer": "0x0000000000000000000000000000000000000001",
+  "admin": "0x0000000000000000000000000000000000000001",
+  "treasury": "0x0000000000000000000000000000000000000002",
+  "feeTreasury": "0x0000000000000000000000000000000000000003",
+  "operator": "0x0000000000000000000000000000000000000004",
+  "stablecoins": {
+    "usdc": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+    "usdt": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7"
+  },
+  "contracts": {
+    "usdr": "0x0000000000000000000000000000000000000011",
+    "rbt": "0x0000000000000000000000000000000000000012",
+    "wft": "0x0000000000000000000000000000000000000013",
+    "kycRegistry": "0x0000000000000000000000000000000000000014",
+    "seriesManager": "0x0000000000000000000000000000000000000015",
+    "incomeDistributor": "0x0000000000000000000000000000000000000016",
+    "spotExchange": "0x0000000000000000000000000000000000000017",
+    "navOracle": "0x0000000000000000000000000000000000000018",
+    "insuranceFund": "0x0000000000000000000000000000000000000019",
+    "perpClearing": "0x000000000000000000000000000000000000001a",
+    "wftClaim": "0x000000000000000000000000000000000000001b"
+  },
+  "params": { "navMaxDevBps": 2000, "navMaxStale": 86400, "spotFeeBps": 100 },
+  "mockStablecoins": false,
+  "safe": null
+}

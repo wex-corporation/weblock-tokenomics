@@ -17,7 +17,13 @@
 //     ^ RENOUNCE_EOA renounces the deployer EOA's admin/cold roles AFTER the Safe is confirmed
 //       to hold them. This is IRREVERSIBLE without the Safe — leave it false until the Safe's
 //       2-of-N signing has been rehearsed. DRY_RUN=true prints the plan without sending txs.
-import { readFileSync } from "node:fs";
+//
+// It also performs the step SAFE_MIGRATION.md §4b calls a hard blocker: revoking the hot
+// backend operator's PerpClearing MARKET_ADMIN. That role gates setMaxFillDeviationBps,
+// i.e. the oracle safety band on settle() — a single hot key holding it can zero the band
+// and settle fills at any signed-limit price. Default ON for mainnet, off elsewhere; set
+// REVOKE_OPERATOR_COLD=false/true to override.
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import hre from "hardhat";
 
@@ -36,6 +42,31 @@ async function main() {
   if (!safe || !ethers.isAddress(safe)) throw new Error("SAFE_ADDRESS env must be a valid address");
   const renounce = process.env.RENOUNCE_EOA === "true";
   const dryRun = process.env.DRY_RUN === "true";
+  const isMainnet = chainId === 43114;
+  if (isMainnet && process.env.CONFIRM_MAINNET !== "GOVERNANCE") {
+    throw new Error("Refusing a mainnet governance change without CONFIRM_MAINNET=GOVERNANCE.");
+  }
+  const revokeOperatorCold =
+    process.env.REVOKE_OPERATOR_COLD !== undefined
+      ? process.env.REVOKE_OPERATOR_COLD === "true"
+      : isMainnet;
+
+  // The Safe must actually be a Safe: granting DEFAULT_ADMIN_ROLE to a typo'd address
+  // and then renouncing would permanently brick governance.
+  if ((await ethers.provider.getCode(safe)) === "0x") {
+    throw new Error(`SAFE_ADDRESS ${safe} has no code — an EOA/typo cannot govern the suite`);
+  }
+  {
+    const s = new ethers.Contract(
+      safe,
+      ["function getOwners() view returns (address[])", "function getThreshold() view returns (uint256)"],
+      ethers.provider,
+    );
+    const owners = await s.getOwners();
+    const th = Number(await s.getThreshold());
+    if (th < 2) throw new Error(`Safe threshold is ${th} — refuse anything below 2`);
+    console.log(`  Safe is ${th}-of-${owners.length}: ${owners.join(", ")}`);
+  }
 
   const manifest = JSON.parse(
     readFileSync(path.resolve(`deployments/${networkName}.json`), "utf8")
@@ -90,6 +121,53 @@ async function main() {
     if (!has) { ok = false; console.log(`  ! MISSING ${g.name}.${g.label} on Safe`); }
   }
   console.log(ok ? "  all roles confirmed on Safe." : "  SOME ROLES MISSING — do NOT renounce.");
+
+  // 2b) revoke the hot operator's cold roles (SAFE_MIGRATION.md §4b)
+  const operator = manifest.operator;
+  const operatorIsDeployer =
+    !!operator && operator.toLowerCase() === deployer.address.toLowerCase();
+  if (operatorIsDeployer && revokeOperatorCold) {
+    // On a single-key deployment (Fuji) the "operator" IS the admin. Revoking here would
+    // strip the very key that still has to run the renounce step.
+    console.log("\nSkipped operator cold-role revoke: operator == deployer on this deployment.");
+  } else if (revokeOperatorCold && operator && operator.toLowerCase() !== safe.toLowerCase()) {
+    console.log("\nRevoking cold roles from the hot backend operator...");
+    const operatorCold = [
+      ["perpClearing", c.perpClearing, "WEBLOCK_MARKET_ADMIN"],
+      ["perpClearing", c.perpClearing, "WEBLOCK_PAUSER"],
+      ["spotExchange", c.spotExchange, "WEBLOCK_MARKET_ADMIN"],
+      ["navOracle", c.navOracle, "WEBLOCK_MARKET_ADMIN"],
+      ["usdr", c.usdr, "WEBLOCK_MINTER"],
+      ["wft", c.wft, "WEBLOCK_MINTER"],
+    ];
+    for (const [name, addr, r] of operatorCold) {
+      if (!addr) continue;
+      const ct = new ethers.Contract(addr, acAbi, deployer);
+      if (!(await ct.hasRole(R(r, ethers), operator))) {
+        console.log(`  = ${name}.${r} not held by operator`);
+        continue;
+      }
+      if (dryRun) {
+        console.log(`  - [dry] revoke ${name}.${r} from operator`);
+        continue;
+      }
+      const tx = await ct.revokeRole(R(r, ethers), operator);
+      await tx.wait();
+      console.log(`  - revoke ${name}.${r} from operator   ${tx.hash}`);
+    }
+  } else if (!revokeOperatorCold) {
+    console.log("\nSkipped operator cold-role revoke (REVOKE_OPERATOR_COLD=false).");
+  }
+
+  // 2c) record the Safe in the manifest so verify-deployment.js picks it up
+  if (ok && !dryRun && manifest.safe !== safe) {
+    manifest.safe = safe;
+    writeFileSync(
+      path.resolve(`deployments/${networkName}.json`),
+      JSON.stringify(manifest, null, 2) + "\n",
+    );
+    console.log(`\n  manifest updated: deployments/${networkName}.json safe = ${safe}`);
+  }
 
   // 3) optional renounce EOA (guarded)
   if (renounce && ok && !dryRun) {

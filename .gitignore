@@ -4,6 +4,10 @@ cache
 coverage
 coverage.json
 .env
+# Any real env file (mainnet keys live here); the .example templates stay tracked.
+.env.*
+!.env.example
+!.env.mainnet.example
 .DS_Store
 .idea
 

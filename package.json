@@ -12,7 +12,15 @@
     "deploy:subnet": "hardhat run scripts/deploy.js --network avalancheSubnet",
     "format": "prettier --plugin prettier-plugin-solidity --write \"contracts/**/*.sol\" \"test/**/*.js\" \"scripts/**/*.js\" \"docs/**/*.md\" \"README.md\" \"hardhat.config.js\"",
     "lint:sol": "solhint 'contracts/**/*.sol'",
-    "check": "pnpm compile && pnpm test"
+    "check": "pnpm compile && pnpm test",
+    "preflight:mainnet": "hardhat run scripts/preflight-mainnet.js --network avalanche",
+    "deploy:mainnet": "hardhat run scripts/deploy.js --network avalanche",
+    "verify:mainnet": "hardhat run scripts/verify-deployment.js --network avalanche",
+    "verify:fuji": "hardhat run scripts/verify-deployment.js --network fuji",
+    "seed:mainnet": "hardhat run scripts/seed-mainnet.js --network avalanche",
+    "safe:deploy:mainnet": "hardhat run scripts/deploy-safe.js --network avalanche",
+    "safe:transfer:mainnet": "hardhat run scripts/safe-transfer-admin.js --network avalanche",
+    "roles:backfill:mainnet": "hardhat run scripts/grant-operator-roles.js --network avalanche"
   },
   "dependencies": {
     "@openzeppelin/contracts": "^5.6.1",

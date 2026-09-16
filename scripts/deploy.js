@@ -3,6 +3,12 @@
 // and exports ABIs under abis/ for the backend + wallet SDK to consume.
 //
 // Usage: npx hardhat run scripts/deploy.js --network fuji
+//        CONFIRM_MAINNET=DEPLOY npx hardhat run scripts/deploy.js --network avalanche
+//
+// MAINNET (43114) is guarded: mock stablecoins are refused, every principal address
+// (admin/treasury/feeTreasury/operator) must be set explicitly, the external stablecoins
+// are probed on-chain, and the hot operator is NOT given PerpClearing MARKET_ADMIN
+// (see docs/SAFE_MIGRATION.md §4b — that role can disable the oracle safety band).
 import fs from "node:fs/promises";
 import path from "node:path";
 import hre from "hardhat";
@@ -31,6 +37,14 @@ async function main() {
   const chainId = Number(net.chainId);
   const networkName = CHAIN_NAMES[chainId] || `chain-${chainId}`;
 
+  const isMainnet = chainId === 43114;
+  if (isMainnet && process.env.CONFIRM_MAINNET !== "DEPLOY") {
+    throw new Error(
+      "Refusing to deploy to Avalanche mainnet without CONFIRM_MAINNET=DEPLOY. " +
+        "Run scripts/preflight-mainnet.js first.",
+    );
+  }
+
   const admin = env("ADMIN_ADDRESS", deployer.address);
   const treasury = env("FOUNDATION_TREASURY_ADDRESS", deployer.address);
   const feeTreasury = env("FEE_TREASURY_ADDRESS", deployer.address);
@@ -42,6 +56,46 @@ async function main() {
   const navMaxStale = Number(env("NAV_MAX_STALENESS_SECS", "86400"));
   const spotFeeBps = Number(env("SPOT_FEE_BPS", "100"));
   const deployMocks = env("DEPLOY_MOCK_STABLES", "true") === "true";
+
+  if (isMainnet) {
+    if (deployMocks) {
+      throw new Error("DEPLOY_MOCK_STABLES must be false on mainnet — use real USDC/USDT.");
+    }
+    // admin MUST be the deployer at deploy time: the wiring block below (setGate,
+    // grantRole, …) is signed by the deployer and needs DEFAULT_ADMIN_ROLE. Governance
+    // moves to the Safe afterwards via scripts/safe-transfer-admin.js — that is the
+    // only supported path, so pointing ADMIN_ADDRESS straight at the Safe here would
+    // deploy a suite nobody can wire.
+    if (admin.toLowerCase() !== deployer.address.toLowerCase()) {
+      throw new Error(
+        "On mainnet ADMIN_ADDRESS must be the deployer (leave it unset). " +
+          "Hand governance to the Safe afterwards with scripts/safe-transfer-admin.js.",
+      );
+    }
+    // The money-holding and hot-signing principals, by contrast, must never silently
+    // fall back to the deploy key.
+    for (const [k, v] of [
+      ["FOUNDATION_TREASURY_ADDRESS", treasury],
+      ["FEE_TREASURY_ADDRESS", feeTreasury],
+      ["BACKEND_OPERATOR_ADDRESS", operator],
+      ["USDC_ADDRESS", process.env.USDC_ADDRESS],
+      ["USDT_ADDRESS", process.env.USDT_ADDRESS],
+    ]) {
+      if (!v || v.toLowerCase() === deployer.address.toLowerCase()) {
+        throw new Error(`${k} must be set explicitly on mainnet (got ${v || "unset"}).`);
+      }
+    }
+    if (operator.toLowerCase() === treasury.toLowerCase()) {
+      throw new Error("BACKEND_OPERATOR_ADDRESS (hot) must differ from the treasury (cold).");
+    }
+    if (baseUri.includes("weblock/rbt/{id}.json")) {
+      throw new Error("FALLBACK_RBT_URI is still the placeholder — set the real metadata base URI.");
+    }
+    const minBal = ethers.parseEther(env("MIN_DEPLOYER_AVAX", "2"));
+    if ((await ethers.provider.getBalance(deployer.address)) < minBal) {
+      throw new Error(`Deployer holds < ${ethers.formatEther(minBal)} AVAX — top up before deploying.`);
+    }
+  }
 
   const R = {
     MANAGER: ethers.keccak256(ethers.toUtf8Bytes("WEBLOCK_MANAGER")),
@@ -77,6 +131,22 @@ async function main() {
   // 1) stablecoins (testnet mocks) or external addresses
   let usdcAddr = env("USDC_ADDRESS");
   let usdtAddr = env("USDT_ADDRESS");
+  if (isMainnet) {
+    // Probe the external stablecoins before anything is deployed: a typo'd address
+    // would otherwise be baked into SpotExchange's immutable quote token.
+    const erc20 = ["function symbol() view returns (string)", "function decimals() view returns (uint8)"];
+    for (const [label, addr] of [["USDC", usdcAddr], ["USDT", usdtAddr]]) {
+      if ((await ethers.provider.getCode(addr)) === "0x") {
+        throw new Error(`${label} ${addr} has no code on chain ${chainId}`);
+      }
+      const t = new ethers.Contract(addr, erc20, ethers.provider);
+      const [sym, dec] = [await t.symbol(), Number(await t.decimals())];
+      console.log(`  ${label} ${addr} -> ${sym} (${dec}dp)`);
+      if (dec !== 6) {
+        throw new Error(`${label} ${addr} has ${dec} decimals; the suite assumes 6dp stablecoins.`);
+      }
+    }
+  }
   if (deployMocks) {
     const usdc = await deploy("MockERC20", ["USD Coin", "USDC", 6]);
     const usdt = await deploy("MockERC20", ["Tether USD", "USDT", 6]);
@@ -126,15 +196,26 @@ async function main() {
     await (await perp.grantRole(R.SETTLEMENT, operator)).wait();
     await (await perp.grantRole(R.FUNDING, operator)).wait();
     await (await perp.grantRole(R.LIQUIDATOR, operator)).wait();
-    await (await perp.grantRole(R.MARKET_ADMIN, operator)).wait();
+    if (isMainnet) {
+      // SAFE_MIGRATION.md §4b: MARKET_ADMIN gates setMaxFillDeviationBps, i.e. the
+      // oracle safety band on settle(). A hot backend key holding it can zero the band
+      // and settle fills at an arbitrary signed-limit price. Cold (Safe) only.
+      console.log("  SKIPPED perp.MARKET_ADMIN for operator (mainnet: cold-role, Safe only)");
+    } else {
+      await (await perp.grantRole(R.MARKET_ADMIN, operator)).wait();
+    }
     console.log(`  granted operator roles to ${operator}`);
   }
 
   // ---- manifest ----
+  const deployBlock = await ethers.provider.getBlockNumber();
   const manifest = {
     network: networkName,
     chainId,
     deployedAt: new Date().toISOString(),
+    // Backend indexers (APP_INCOME_INDEXER_START_BLOCK / claim indexer) start here
+    // instead of scanning the chain from genesis.
+    deployBlock,
     deployer: deployer.address,
     admin,
     treasury,
@@ -155,6 +236,9 @@ async function main() {
       wftClaim: await wftClaim.getAddress(),
     },
     params: { navMaxDevBps, navMaxStale, spotFeeBps },
+    mockStablecoins: deployMocks,
+    // Filled in by scripts/safe-transfer-admin.js once governance moves to the Safe.
+    safe: null,
   };
 
   const outDir = path.resolve("deployments");

@@ -7,6 +7,12 @@ const accounts = process.env.DEPLOYER_PRIVATE_KEY
   ? [process.env.DEPLOYER_PRIVATE_KEY]
   : [];
 
+// Mainnet uses its OWN key variable so a testnet key left in .env can never sign a
+// 43114 transaction by accident. Falls back to nothing (not to DEPLOYER_PRIVATE_KEY).
+const mainnetAccounts = process.env.MAINNET_DEPLOYER_PRIVATE_KEY
+  ? [process.env.MAINNET_DEPLOYER_PRIVATE_KEY]
+  : [];
+
 /** @type {import('hardhat/config').HardhatUserConfig} */
 const config = {
   plugins: [hardhatEthers, hardhatNetworkHelpers, hardhatMocha],
@@ -41,6 +47,15 @@ const config = {
         "https://api.avax-test.network/ext/bc/C/rpc",
       chainId: 43113,
       accounts,
+    },
+    // Avalanche C-Chain mainnet. The public API node is rate-limited; set
+    // AVALANCHE_RPC_URL to a dedicated endpoint (Infura/Ankr/QuickNode/Blockdaemon)
+    // before deploying — a dropped request mid-deploy leaves a half-wired suite.
+    avalanche: {
+      type: "http",
+      url: process.env.AVALANCHE_RPC_URL || "https://api.avax.network/ext/bc/C/rpc",
+      chainId: 43114,
+      accounts: mainnetAccounts,
     },
   },
   paths: {
