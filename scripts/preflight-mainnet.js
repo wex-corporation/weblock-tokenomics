@@ -83,6 +83,25 @@ async function main() {
     warn("AVALANCHE_RPC_URL unset — using the public rate-limited node; a dropped request mid-deploy leaves a half-wired suite");
   } else ok("AVALANCHE_RPC_URL set (dedicated endpoint)");
 
+  // --- RBT metadata -------------------------------------------------------
+  // Every RBT points at this base URI. A host that 404s means every token shows
+  // no name and no image in wallets and explorers from the moment it is minted.
+  const uriTemplate = process.env.FALLBACK_RBT_URI;
+  if (uriTemplate && /^https?:\/\//.test(uriTemplate)) {
+    console.log("\nRBT metadata");
+    const probe = uriTemplate.replace("{id}", "1");
+    try {
+      const res = await fetch(probe, { method: "GET", redirect: "follow" });
+      if (res.ok) ok(`${probe} -> ${res.status}`);
+      else fail(`${probe} -> ${res.status}; every RBT would have broken metadata`);
+    } catch (e) {
+      fail(`${probe} is unreachable (${e.message})`);
+    }
+  } else if (uriTemplate) {
+    console.log("\nRBT metadata");
+    warn(`${uriTemplate} is not http(s) — cannot verify it resolves`);
+  }
+
   // --- external tokens ----------------------------------------------------
   console.log("\nExternal stablecoins");
   const erc20 = [

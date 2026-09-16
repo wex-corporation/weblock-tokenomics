@@ -16,8 +16,12 @@
 #   ./scripts/mainnet.sh sync       propagate addresses to the other 3 repos
 #   ./scripts/mainnet.sh renounce   IRREVERSIBLE — EOA gives up admin
 #
-#   ./scripts/mainnet.sh all        check → deploy → seed → safe → govern → sync
+#   ./scripts/mainnet.sh all        check → safe → deploy → seed → govern → sync
 #                                   stops before renounce, always
+#
+# The Safe is created before the contracts on purpose: USDR mints its initial
+# supply to FOUNDATION_TREASURY_ADDRESS from a constructor argument, so that
+# address has to exist and be final before the deploy, not after it.
 #
 # `all` deliberately does not include `renounce`. Everything before it is
 # recoverable: a bad deploy is another 0.002 AVAX, a bad Safe is another Safe.
@@ -180,6 +184,34 @@ phase_deploy() {
                 FOUNDATION_TREASURY_ADDRESS FEE_TREASURY_ADDRESS \
                 BACKEND_OPERATOR_ADDRESS FALLBACK_RBT_URI USDR_INITIAL_SUPPLY
 
+    # These two are worth a second look because they are not equally reversible.
+    say "  Treasury addresses this deploy will bake in:"
+    say "    FOUNDATION_TREASURY_ADDRESS = ${FOUNDATION_TREASURY_ADDRESS}"
+    say "      ${B}immutable${N} — USDR mints its whole initial supply here from a"
+    say "      constructor arg. Wrong value means redeploying USDR."
+    say "    FEE_TREASURY_ADDRESS        = ${FEE_TREASURY_ADDRESS}"
+    say "      changeable later via SpotExchange.setFeeConfig (MARKET_ADMIN)."
+    # A Safe made in the Safe UI has no local manifest, only SAFE_ADDRESS.
+    local safe_addr=""
+    if [ -f "$SAFE_MANIFEST" ]; then
+      safe_addr=$(node -pe 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).safe' "$SAFE_MANIFEST")
+    elif [ -n "${SAFE_ADDRESS:-}" ]; then
+      safe_addr="$SAFE_ADDRESS"
+    fi
+    if [ -n "$safe_addr" ]; then
+      # macOS ships bash 3.2, where ${var,,} is a bad substitution.
+      local ft_lc sa_lc
+      ft_lc=$(printf '%s' "$FOUNDATION_TREASURY_ADDRESS" | tr 'A-Z' 'a-z')
+      sa_lc=$(printf '%s' "$safe_addr" | tr 'A-Z' 'a-z')
+      if [ "$ft_lc" != "$sa_lc" ]; then
+        warn "FOUNDATION_TREASURY_ADDRESS is not the Safe ($safe_addr)."
+        warn "That is allowed, but the USDR supply will not land in the Safe."
+      fi
+    else
+      warn "No Safe exists yet. If you intend the treasury to be the Safe,"
+      warn "stop and run './scripts/mainnet.sh safe' first — this value is immutable."
+    fi
+    say ""
     say "  Running preflight first — deploy is refused if it does not pass."
     hh scripts/preflight-mainnet.js || die "preflight failed; fix the FAILs above."
 
@@ -390,12 +422,17 @@ phase_status() {
 
 phase_all() {
   say ""
-  say "${B}Running: check → deploy → seed → safe → govern → sync${N}"
+  say "${B}Running: check → safe → deploy → seed → govern → sync${N}"
   say "Stops before renounce. That step is always run on its own."
+  # The Safe comes FIRST. It has no dependency on the contracts (deploy-safe.js
+  # never reads the deployment manifest), and the deploy needs its address:
+  # USDR mints its entire initial supply to FOUNDATION_TREASURY_ADDRESS via a
+  # CONSTRUCTOR argument, so that one cannot be repointed afterwards without
+  # redeploying USDR and reissuing the supply.
   phase_check
+  phase_safe
   phase_deploy
   phase_seed
-  phase_safe
   phase_govern
   phase_sync
   head_ "Done — everything up to the irreversible step"
