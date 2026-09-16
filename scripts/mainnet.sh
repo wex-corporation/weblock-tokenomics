@@ -331,6 +331,26 @@ phase_status() {
     for v in FOUNDATION_TREASURY_ADDRESS FEE_TREASURY_ADDRESS FALLBACK_RBT_URI USDR_INITIAL_SUPPLY; do
       [ -n "${!v:-}" ] && ok "$v set" || no "$v NOT set"
     done
+
+    # Needed by `seed`, not by `deploy` — listed separately so the deploy
+    # blockers above stay readable.
+    local seed_missing=()
+    for v in SEED_MAX_SUPPLY SEED_SALE_END SEED_MATURITY SEED_ISSUER_TREASURY; do
+      [ -z "${!v:-}" ] && seed_missing+=("$v")
+    done
+    if [ ${#seed_missing[@]} -eq 0 ]; then
+      ok "seed values set (series #${SEED_TOKEN_ID:-?}, cap ${SEED_MAX_SUPPLY:-?})"
+    else
+      no "seed values NOT set: ${seed_missing[*]}"
+    fi
+
+    local safe_n
+    safe_n=$(printf '%s' "${SAFE_OWNERS:-}" | awk -F, '{print NF}')
+    if [ -n "${SAFE_OWNERS:-}" ]; then
+      ok "SAFE_OWNERS: $safe_n owner(s), threshold ${SAFE_THRESHOLD:-unset}"
+    else
+      no "SAFE_OWNERS NOT set (need 3 addresses for 2-of-3)"
+    fi
   else
     no ".env.mainnet missing      → cp .env.mainnet.example .env.mainnet"
   fi
