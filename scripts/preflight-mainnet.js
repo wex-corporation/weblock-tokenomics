@@ -64,8 +64,17 @@ async function main() {
   ];
   for (const [k, why] of required) {
     const v = process.env[k];
-    if (!v) fail(`${k} unset — ${why}`);
-    else ok(`${k} = ${v}`);
+    if (!v) {
+      fail(`${k} unset — ${why}`);
+      continue;
+    }
+    // Mirror every rejection deploy.js makes, or preflight says READY and the
+    // deploy dies on the same value a moment later.
+    if (k === "FALLBACK_RBT_URI" && v.includes("weblock/rbt/{id}.json")) {
+      fail(`${k} is still the placeholder (${v}) — deploy.js rejects it`);
+      continue;
+    }
+    ok(`${k} = ${v}`);
   }
   if (process.env.DEPLOY_MOCK_STABLES !== "false") {
     fail("DEPLOY_MOCK_STABLES must be explicitly false on mainnet");
