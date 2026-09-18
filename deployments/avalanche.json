@@ -1,0 +1,35 @@
+{
+  "network": "avalanche",
+  "chainId": 43114,
+  "deployedAt": "2026-09-18T02:39:04.538Z",
+  "deployBlock": 95555706,
+  "deployer": "0x1493B62933A86d01A7e9d9DFC446AEaE38444d0B",
+  "admin": "0x1493B62933A86d01A7e9d9DFC446AEaE38444d0B",
+  "treasury": "0xacAb6CF97fA6fB241a85b695D6D74D61c4b56412",
+  "feeTreasury": "0xacAb6CF97fA6fB241a85b695D6D74D61c4b56412",
+  "operator": "0xb25aBa4E910EA45069889828f81D35DEA4fAfb58",
+  "stablecoins": {
+    "usdc": "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+    "usdt": "0x9702230A8Ea53601f5cD2dc00fDBc13d4dF4A8c7"
+  },
+  "contracts": {
+    "usdr": "0x0901B3a1cE9119B6A6Be4C15Cc804A12EECeaA58",
+    "rbt": "0x0412d665ffcb651b578F46F004909535bbBA579f",
+    "wft": "0x0573BAC1FaBb3163A9cB015d692F8f5Bc2831dE6",
+    "kycRegistry": "0xCA9599d3816Ec142ACb5417f79C9151da96FbC93",
+    "seriesManager": "0x0EA1f2d4f00198C05FBf1d771b12377Cce3B90A0",
+    "incomeDistributor": "0x2284bA02525D1A3194b155FA7F2E96f770997a32",
+    "spotExchange": "0xF4d15E14ab17A3e2dE05be428605C24c1380cd20",
+    "navOracle": "0xDE524f89a5d741583CE09D254b04f7E9e5d7FA34",
+    "insuranceFund": "0x08681ce5090f8C389A558c0eb75cBCeE5fa82906",
+    "perpClearing": "0xEcd6Cf479226B158Fe1303BAe4f9a947091922C6",
+    "wftClaim": "0x04e43Ae137caEF8606e694F8CC92865CAD22DE8C"
+  },
+  "params": {
+    "navMaxDevBps": 2000,
+    "navMaxStale": 86400,
+    "spotFeeBps": 100
+  },
+  "mockStablecoins": false,
+  "safe": "0xacAb6CF97fA6fB241a85b695D6D74D61c4b56412"
+}

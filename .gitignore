@@ -13,3 +13,6 @@ coverage.json
 
 # testnet Safe manifest (contains owner B private key)
 deployments/fuji-safe.json
+
+# Local manifest backups written by scripts/mainnet.sh before each phase.
+deployments/backups/
