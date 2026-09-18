@@ -27,6 +27,12 @@ Fuji 실증은 2-of-2였지만 그건 테스트넷이라 가능했던 것이다.
 퇴사·사고·기기분실만 해도 **모든 파라미터 변경·일시정지·발행이 영구히 불가능**해진다.
 `deploy-safe.js`는 메인넷 2-of-2를 기본 거부한다.
 
+> **2026-09-18 결정: 서명자 2명, 2-of-2로 간다.** `.env.mainnet`에 `SAFE_ALLOW_2OF2=yes`가
+> 들어가 있다. 위 위험을 줄이는 유일한 방법은 **두 서명자의 시드 문구를 각각 따로 오프라인
+> 백업**해 두는 것이다. 기기를 잃어도 시드로 같은 주소를 복구할 수 있으면 잠기지 않는다.
+> 시드까지 잃으면 복구 불가. 나중에 서명자를 늘리려면 Safe에서 `addOwnerWithThreshold`를
+> 2-of-2 서명으로 실행하면 된다(주소는 그대로).
+
 **서명자 키 요건**
 
 - 각 서명자는 **서로 다른 하드웨어 지갑**(Ledger / Trezor)을 쓴다. 같은 시드에서 파생된
@@ -123,14 +129,16 @@ SAFE_ADDRESS=0xSAFE npx hardhat run scripts/verify-deployment.js --network avala
 1. **Safe 사전 검증** — `SAFE_ADDRESS`에 코드가 있는지, `getOwners()`/`getThreshold()`에
    응답하는지, threshold가 2 이상인지. EOA나 오타 주소에 `DEFAULT_ADMIN_ROLE`을 준 뒤
    renounce하면 거버넌스가 영구히 잠기므로 이 검증은 우회 불가.
-2. 11개 컨트랙트 전부에 `DEFAULT_ADMIN_ROLE` grant + 콜드 role
-   (USDR/WFT `MINTER`, RBT `URI_MANAGER`·`LOCK_MANAGER`, SeriesManager `TREASURY_ADMIN`,
-   Spot/Perp `MARKET_ADMIN`, Perp `PAUSER`) grant.
+2. 11개 컨트랙트 전부에 `DEFAULT_ADMIN_ROLE` grant + 콜드 role grant
+   (`scripts/lib/roles.js` `SAFE_COLD_ROLES`): USDR `MINTER`·`PAUSER`, WFT `MINTER`·`LOCK_MANAGER`·`PAUSER`,
+   RBT `URI_MANAGER`·`PAUSER`, Spot·Nav `MARKET_ADMIN`, Perp `MARKET_ADMIN`·`PAUSER`.
+   (2026-09-18 수정: 예전 목록은 컨트랙트와 어긋나 있었다 — RBT에는 없는 `LOCK_MANAGER`,
+   어디서도 쓰지 않는 `TREASURY_ADMIN`을 주고, 실제로 필요한 각 토큰 `PAUSER`·WFT `LOCK_MANAGER`·
+   Nav `MARKET_ADMIN`은 빠져 있었다.)
 3. **핫 operator의 콜드 role 회수** — 메인넷에서 기본 ON. `SAFE_MIGRATION.md` §4b가
    하드블로커로 지정한 항목이다: PerpClearing `MARKET_ADMIN`은 `setMaxFillDeviationBps`
    (= 오라클 안전밴드)를 게이트하므로, 핫키가 이걸 쥐면 밴드를 0으로 만들고 임의 가격에
-   정산할 수 있다. 회수 대상은 Perp `MARKET_ADMIN`/`PAUSER`, Spot·Nav `MARKET_ADMIN`,
-   USDR·WFT `MINTER`.
+   정산할 수 있다. 회수 대상은 위 2번의 콜드 role 전부.
    (참고: `deploy.js`도 메인넷에서는 애초에 operator에게 Perp `MARKET_ADMIN`을 주지 않는다.)
 4. 매니페스트 `deployments/avalanche.json`에 `safe` 필드 기록.
 
@@ -159,6 +167,12 @@ SAFE_ADDRESS=0xSAFE EXPECT_RENOUNCED=true \
   npx hardhat run scripts/verify-deployment.js --network avalanche
 ```
 
+renounce는 Safe가 넘겨받은 role만이 아니라 **deployer가 가진 role 전부**를 포기한다.
+생성자가 deployer에게 준 운영 role(`KYC_MANAGER`, `SETTLEMENT`, `ORACLE_PUBLISHER`, `OPERATOR` 등)까지
+포함한다 — 예전 스크립트는 이것들을 남겨서, 로컬 `.env.mainnet`에 평문으로 있는 배포키가 renounce 후에도
+아무 주소나 KYC 통과 처리하고 USDR/RBT/WFT를 일시정지할 수 있었다. `EXPECT_RENOUNCED=true` 검증도
+이제 전 role을 확인한다.
+
 이후 모든 파라미터·발행·일시정지는 서명 N명이 필요하다.
 
 ---
@@ -170,7 +184,7 @@ SAFE_ADDRESS=0xSAFE EXPECT_RENOUNCED=true \
 | 대상 | 현재 | 변경 방법 |
 |---|---|---|
 | SpotExchange 수수료 | 배포 인자 `feeTreasury` | Safe에서 `setFeeConfig(safe, feeBps)` (MARKET_ADMIN) |
-| USDR 초기공급 | 배포 인자 `treasury`로 발행됨 | 잔액을 Safe로 `transfer` |
+| USDR 초기공급 | `USDR_INITIAL_SUPPLY=0` (무기한선물 미개방이라 발행 안 함) | 필요해지면 Safe가 `mint` (MINTER) |
 | InsuranceFund 잔액 | 컨트랙트 보유 | 인출 경로는 `DRAWER`(PerpClearing) 전용 — 이관 불필요 |
 | RBT 판매대금 | 시리즈별 `issuerTreasury` | `seed-mainnet.js`의 `SEED_ISSUER_TREASURY`로 처음부터 Safe 지정 권장 |
 
@@ -181,8 +195,8 @@ Safe 1.4.1 + CompatibilityFallbackHandler는 ERC20/ERC721/ERC1155 수신을 모�
 
 ## 7. 체크리스트
 
-- [ ] threshold ≥ 2, 서명자 ≥ 3 (2-of-2 아님)
-- [ ] 서명자 전원 서로 다른 하드웨어 지갑, 시드 분리 보관
+- [ ] 2-of-2 (`SAFE_ALLOW_2OF2=yes`) — 서명자 2명 각자 다른 지갑
+- [ ] 두 서명자 시드 문구를 **각각 따로** 오프라인 백업 (2-of-2에서 유일한 복구 수단)
 - [ ] 서명자 각 주소 AVAX ≥ 0.05
 - [ ] Safe 생성 후 `getOwners()`/`getThreshold()` 온체인 재확인
 - [ ] WeBlock과 무관한 트랜잭션으로 N-of-M 리허설 완료

@@ -7,6 +7,12 @@
 //   SAFE_ADDRESS=0x... EXPECT_RENOUNCED=true npx hardhat run scripts/verify-deployment.js --network avalanche
 import fs from "node:fs";
 import hre from "hardhat";
+import {
+  DEPLOYER_ROLES,
+  OPERATOR_FORBIDDEN_ROLES,
+  OPERATOR_HOT_ROLES,
+  SAFE_COLD_ROLES,
+} from "./lib/roles.js";
 
 const CHAIN_NAMES = { 43113: "fuji", 43114: "avalanche", 31337: "hardhat" };
 const DEFAULT_ADMIN = "0x" + "0".repeat(64);
@@ -97,33 +103,13 @@ async function main() {
 
   // --- 4. hot operator roles (keepers must keep working) ------------------
   console.log("\nHot operator roles (must be PRESENT)");
-  const hot = [
-    ["kycRegistry", "WEBLOCK_KYC_MANAGER"],
-    ["seriesManager", "WEBLOCK_OPERATOR"],
-    ["seriesManager", "WEBLOCK_TREASURY_FUNDER"],
-    ["seriesManager", "WEBLOCK_DELINQUENCY_MANAGER"],
-    ["incomeDistributor", "WEBLOCK_DISTRIBUTION_MANAGER"],
-    ["spotExchange", "WEBLOCK_SETTLEMENT"],
-    ["navOracle", "WEBLOCK_ORACLE_PUBLISHER"],
-    ["perpClearing", "WEBLOCK_SETTLEMENT"],
-    ["perpClearing", "WEBLOCK_FUNDING"],
-    ["perpClearing", "WEBLOCK_LIQUIDATOR"],
-  ];
-  for (const [k, r] of hot) {
+  for (const [k, r] of OPERATOR_HOT_ROLES) {
     check(await has(c[k], r, m.operator), `${k}.${r} held by operator`);
   }
 
   // --- 5. cold roles the hot key must NOT hold ---------------------------
   console.log("\nHot operator roles (must be ABSENT — SAFE_MIGRATION.md §4b)");
-  const forbidden = [
-    ["perpClearing", "WEBLOCK_MARKET_ADMIN"], // can zero the oracle safety band
-    ["perpClearing", "WEBLOCK_PAUSER"],
-    ["spotExchange", "WEBLOCK_MARKET_ADMIN"],
-    ["navOracle", "WEBLOCK_MARKET_ADMIN"],
-    ["usdr", "WEBLOCK_MINTER"],
-    ["wft", "WEBLOCK_MINTER"],
-  ];
-  for (const [k, r] of forbidden) {
+  for (const [k, r] of OPERATOR_FORBIDDEN_ROLES) {
     checkSep(!(await has(c[k], r, m.operator)), `${k}.${r} NOT held by operator`);
   }
   console.log("\nAdmin role (must be ABSENT on the operator)");
@@ -147,14 +133,7 @@ async function main() {
     } catch {
       fail(`${safe} does not answer getOwners()/getThreshold() — not a Safe?`);
     }
-    const cold = {
-      usdr: ["WEBLOCK_MINTER"],
-      wft: ["WEBLOCK_MINTER"],
-      rbt: ["WEBLOCK_URI_MANAGER", "WEBLOCK_LOCK_MANAGER"],
-      seriesManager: ["WEBLOCK_TREASURY_ADMIN"],
-      spotExchange: ["WEBLOCK_MARKET_ADMIN"],
-      perpClearing: ["WEBLOCK_MARKET_ADMIN", "WEBLOCK_PAUSER"],
-    };
+    const cold = SAFE_COLD_ROLES;
     for (const [name, addr] of Object.entries(c)) {
       check(await has(addr, "admin", safe), `${name}.DEFAULT_ADMIN_ROLE held by Safe`);
       for (const r of cold[name] || []) {
@@ -165,6 +144,11 @@ async function main() {
       console.log("\nDeployer EOA renounced");
       for (const [name, addr] of Object.entries(c)) {
         check(!(await has(addr, "admin", m.deployer)), `${name}.DEFAULT_ADMIN_ROLE renounced by deployer`);
+        const leftover = [];
+        for (const r of new Set([...(DEPLOYER_ROLES[name] || []), ...(cold[name] || [])])) {
+          if (await has(addr, r, m.deployer)) leftover.push(r);
+        }
+        check(!leftover.length, `${name}: deployer holds no other role${leftover.length ? ` (still: ${leftover.join(", ")})` : ""}`);
       }
     } else {
       console.log("\n  NOTE deployer EOA still holds admin (expected until RENOUNCE_EOA=true).");

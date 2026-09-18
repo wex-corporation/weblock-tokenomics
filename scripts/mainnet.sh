@@ -159,8 +159,8 @@ EOF
   ok "operator address: $OP_ADDR"
   say ""
   say "  ${B}Now, before anything else:${N}"
-  say "    1. Fund ${C}$DEP_ADDR${N} with at least 2 AVAX"
-  say "    2. Fund ${C}$OP_ADDR${N} with at least 0.5 AVAX (keeper gas)"
+  say "    1. Fund ${C}$DEP_ADDR${N} with at least 0.2 AVAX (more if gas is high — 'check' prints the live need)"
+  say "    2. Fund ${C}$OP_ADDR${N} with at least 0.2 AVAX (keeper gas)"
   say "    3. Copy the operator key from .env.mainnet.operator-key into AWS"
   say "       Secrets Manager, then delete that file"
   say "    4. Back up .env.mainnet somewhere safe — losing the deployer key"
@@ -396,7 +396,7 @@ phase_status() {
     if [ -n "${SAFE_OWNERS:-}" ]; then
       ok "SAFE_OWNERS: $safe_n owner(s), threshold ${SAFE_THRESHOLD:-unset}"
     else
-      no "SAFE_OWNERS NOT set (need 3 addresses for 2-of-3)"
+      no "SAFE_OWNERS NOT set (2-of-2 also needs SAFE_ALLOW_2OF2=yes)"
     fi
   else
     no ".env.mainnet missing      → cp .env.mainnet.example .env.mainnet"

@@ -3,6 +3,12 @@
 //
 // Usage: npx hardhat run scripts/preflight-mainnet.js --network avalanche
 import hre from "hardhat";
+import {
+  DEFAULT_MIN_DEPLOYER_AVAX,
+  DEFAULT_MIN_OPERATOR_AVAX,
+  fullSuiteCostWei,
+  minDeployerWei,
+} from "./lib/gas-budget.js";
 
 const SAFE_INFRA = {
   "SafeL2 1.4.1 singleton": "0x29fcB43b46531BcA003ddC8FCB67FFE91900C762",
@@ -34,6 +40,7 @@ async function main() {
     return;
   }
   ok("connected to Avalanche C-Chain mainnet (43114)");
+  const gasPrice = (await ethers.provider.getFeeData()).gasPrice ?? 0n;
 
   // --- signer -------------------------------------------------------------
   console.log("\nDeployer");
@@ -43,10 +50,15 @@ async function main() {
   } else {
     const deployer = signers[0];
     const bal = await ethers.provider.getBalance(deployer.address);
+    const need = minDeployerWei(
+      gasPrice,
+      ethers.parseEther(process.env.MIN_DEPLOYER_AVAX || DEFAULT_MIN_DEPLOYER_AVAX),
+    );
     const avax = Number(ethers.formatEther(bal));
+    const needAvax = Number(ethers.formatEther(need));
     console.log(`        address ${deployer.address}`);
-    if (avax >= 2) ok(`balance ${avax.toFixed(4)} AVAX (>= 2 needed for the full suite)`);
-    else fail(`balance ${avax.toFixed(4)} AVAX — top up to at least 2 AVAX`);
+    if (bal >= need) ok(`balance ${avax.toFixed(4)} AVAX (>= ${needAvax.toFixed(4)} needed at this gas price)`);
+    else fail(`balance ${avax.toFixed(4)} AVAX — top up to at least ${needAvax.toFixed(4)} AVAX`);
     if ((await ethers.provider.getCode(deployer.address)) !== "0x") {
       fail("deployer address has contract code — it must be an EOA");
     }
@@ -143,9 +155,11 @@ async function main() {
   }
   const op = process.env.BACKEND_OPERATOR_ADDRESS;
   if (op && ethers.isAddress(op)) {
-    const opBal = Number(ethers.formatEther(await ethers.provider.getBalance(op)));
-    if (opBal >= 0.5) ok(`operator holds ${opBal.toFixed(4)} AVAX for gas`);
-    else fail(`operator holds ${opBal.toFixed(4)} AVAX — keepers (settle/publish/liquidate) will stall; fund it`);
+    const opBalWei = await ethers.provider.getBalance(op);
+    const opNeed = ethers.parseEther(process.env.MIN_OPERATOR_AVAX || DEFAULT_MIN_OPERATOR_AVAX);
+    const opBal = Number(ethers.formatEther(opBalWei));
+    if (opBalWei >= opNeed) ok(`operator holds ${opBal.toFixed(4)} AVAX for gas`);
+    else fail(`operator holds ${opBal.toFixed(4)} AVAX — needs ${ethers.formatEther(opNeed)}; keepers (settle/publish/liquidate) will stall`);
   }
 
   // --- Safe infra ---------------------------------------------------------
@@ -168,11 +182,9 @@ async function main() {
 
   // --- gas estimate -------------------------------------------------------
   console.log("\nGas");
-  const fee = await ethers.provider.getFeeData();
-  const gwei = Number(ethers.formatUnits(fee.gasPrice ?? 0n, "gwei"));
-  console.log(`        gasPrice ~${gwei.toFixed(2)} gwei`);
-  // ~24M gas measured for the 11-contract suite + wiring on Fuji.
-  const estAvax = (24_000_000 * (Number(fee.gasPrice ?? 0n) / 1e18));
+  const gwei = Number(ethers.formatUnits(gasPrice, "gwei"));
+  console.log(`        gasPrice ~${gwei.toFixed(4)} gwei`);
+  const estAvax = Number(ethers.formatEther(fullSuiteCostWei(gasPrice)));
   console.log(`        full-suite deploy ≈ ${estAvax.toFixed(4)} AVAX at this price`);
 
   console.log(`\n${fails === 0 ? "READY" : "NOT READY"} — ${fails} fail(s), ${warns} warning(s)\n`);

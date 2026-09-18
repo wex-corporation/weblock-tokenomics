@@ -12,6 +12,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import hre from "hardhat";
+import { DEFAULT_MIN_DEPLOYER_AVAX, minDeployerWei } from "./lib/gas-budget.js";
 
 const CHAIN_NAMES = {
   43113: "fuji",
@@ -91,7 +92,10 @@ async function main() {
     if (baseUri.includes("weblock/rbt/{id}.json")) {
       throw new Error("FALLBACK_RBT_URI is still the placeholder — set the real metadata base URI.");
     }
-    const minBal = ethers.parseEther(env("MIN_DEPLOYER_AVAX", "2"));
+    const minBal = minDeployerWei(
+      (await ethers.provider.getFeeData()).gasPrice ?? 0n,
+      ethers.parseEther(env("MIN_DEPLOYER_AVAX", DEFAULT_MIN_DEPLOYER_AVAX)),
+    );
     if ((await ethers.provider.getBalance(deployer.address)) < minBal) {
       throw new Error(`Deployer holds < ${ethers.formatEther(minBal)} AVAX — top up before deploying.`);
     }

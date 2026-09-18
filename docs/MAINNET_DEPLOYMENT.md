@@ -34,7 +34,7 @@ $EDITOR .env.mainnet          # 전 항목 채우기
 
 - `AVALANCHE_RPC_URL` — **전용 엔드포인트**. 공개 노드(api.avax.network)는 레이트리밋이
   있어 배포 중 요청이 끊기면 스위트가 절반만 배선된 상태로 남는다.
-- `MAINNET_DEPLOYER_PRIVATE_KEY` — AVAX 2 이상 보유한 EOA.
+- `MAINNET_DEPLOYER_PRIVATE_KEY` — 가스용 AVAX 보유 EOA (기준은 아래 프리플라이트).
 - `FOUNDATION_TREASURY_ADDRESS` / `FEE_TREASURY_ADDRESS` — Safe 권장.
 - `BACKEND_OPERATOR_ADDRESS` — 백엔드 핫 서명자. 가스용 AVAX 필요.
 - `FALLBACK_RBT_URI` — 실제 메타데이터 베이스 URI (플레이스홀더면 배포 거부).
@@ -64,10 +64,10 @@ pnpm preflight:mainnet
 
 `READY`가 나올 때까지 FAIL을 전부 해소한다. 점검 항목:
 
-- chainId 43114 연결, 배포키 EOA 여부 + AVAX 잔액 ≥ 2
+- chainId 43114 연결, 배포키 EOA 여부 + AVAX 잔액 ≥ max(`MIN_DEPLOYER_AVAX`(기본 0.2), 현재 가스가 기준 전체 배포비 × 100)
 - 필수 env 전부 설정, `DEPLOY_MOCK_STABLES=false`
 - USDC/USDT 온체인 실재 + `symbol()`/`decimals()==6` 확인
-- treasury/feeTreasury/operator가 배포키와 다른지, operator 가스 잔액
+- treasury/feeTreasury/operator가 배포키와 다른지, operator 가스 잔액 ≥ `MIN_OPERATOR_AVAX`(기본 0.2)
 - Safe 1.4.1 인프라 4종 실재
 - 현재 gasPrice 기준 전체 배포 예상 비용 출력
 
@@ -90,7 +90,7 @@ CONFIRM_MAINNET=DEPLOY pnpm deploy:mainnet
 4. treasury/feeTreasury/operator가 deployer와 같으면 거부.
 5. USDC/USDT 코드 존재 + 6dp 확인 (배포 시작 **전에**).
 6. `FALLBACK_RBT_URI` 플레이스홀더면 거부.
-7. AVAX 잔액 < `MIN_DEPLOYER_AVAX`면 거부.
+7. AVAX 잔액이 프리플라이트와 같은 기준(`scripts/lib/gas-budget.js`)에 못 미치면 거부.
 8. operator에게 PerpClearing `MARKET_ADMIN`을 **부여하지 않음**.
 
 산출물:

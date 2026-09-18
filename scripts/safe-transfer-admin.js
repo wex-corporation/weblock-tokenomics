@@ -3,10 +3,10 @@
 // The 11 WeBlock contracts use OpenZeppelin AccessControl. DEFAULT_ADMIN_ROLE is the crown
 // jewel: whoever holds it can grant/revoke every other role. This script grants the Safe:
 //   - DEFAULT_ADMIN_ROLE on every contract  (role management authority)
-//   - the "cold" governance roles that must NOT live on the hot backend key:
-//       MINTER (USDR, WFT), URI_MANAGER + LOCK_MANAGER (RBT),
-//       MARKET_ADMIN (SpotExchange, PerpClearing), PAUSER (PerpClearing),
-//       TREASURY_ADMIN (SeriesManager)
+//   - the "cold" governance roles that must NOT live on the hot backend key
+//     (scripts/lib/roles.js SAFE_COLD_ROLES): MINTER + PAUSER (USDR), MINTER + LOCK_MANAGER +
+//     PAUSER (WFT), URI_MANAGER + PAUSER (RBT), MARKET_ADMIN (SpotExchange, NavOracle),
+//     MARKET_ADMIN + PAUSER (PerpClearing)
 // The "hot" operational roles (SETTLEMENT / ORACLE_PUBLISHER / FUNDING / LIQUIDATOR /
 // KYC_MANAGER / DISTRIBUTION_MANAGER / TREASURY_FUNDER / DELINQUENCY_MANAGER) stay with the
 // backend operator so automated keepers keep working; the Safe can revoke them at will.
@@ -14,7 +14,8 @@
 // Usage:
 //   SAFE_ADDRESS=0x... npx hardhat run scripts/safe-transfer-admin.js --network fuji
 //   SAFE_ADDRESS=0x... RENOUNCE_EOA=true npx hardhat run scripts/safe-transfer-admin.js --network fuji
-//     ^ RENOUNCE_EOA renounces the deployer EOA's admin/cold roles AFTER the Safe is confirmed
+//     ^ RENOUNCE_EOA renounces EVERY role the deployer EOA holds (admin, cold and the
+//       operational roles its constructors granted) AFTER the Safe is confirmed
 //       to hold them. This is IRREVERSIBLE without the Safe — leave it false until the Safe's
 //       2-of-N signing has been rehearsed. DRY_RUN=true prints the plan without sending txs.
 //
@@ -26,6 +27,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import hre from "hardhat";
+import { DEPLOYER_ROLES, OPERATOR_FORBIDDEN_ROLES, SAFE_COLD_ROLES } from "./lib/roles.js";
 
 const R = (name, ethers) => ethers.keccak256(ethers.toUtf8Bytes(name));
 const DEFAULT_ADMIN = "0x0000000000000000000000000000000000000000000000000000000000000000";
@@ -74,14 +76,7 @@ async function main() {
   const c = manifest.contracts;
 
   // role bundles per contract: which roles the Safe should hold (beyond DEFAULT_ADMIN everywhere)
-  const cold = {
-    usdr: ["WEBLOCK_MINTER"],
-    wft: ["WEBLOCK_MINTER"],
-    rbt: ["WEBLOCK_URI_MANAGER", "WEBLOCK_LOCK_MANAGER"],
-    seriesManager: ["WEBLOCK_TREASURY_ADMIN"],
-    spotExchange: ["WEBLOCK_MARKET_ADMIN"],
-    perpClearing: ["WEBLOCK_MARKET_ADMIN", "WEBLOCK_PAUSER"],
-  };
+  const cold = SAFE_COLD_ROLES;
 
   const acAbi = [
     "function grantRole(bytes32 role, address account)",
@@ -132,14 +127,7 @@ async function main() {
     console.log("\nSkipped operator cold-role revoke: operator == deployer on this deployment.");
   } else if (revokeOperatorCold && operator && operator.toLowerCase() !== safe.toLowerCase()) {
     console.log("\nRevoking cold roles from the hot backend operator...");
-    const operatorCold = [
-      ["perpClearing", c.perpClearing, "WEBLOCK_MARKET_ADMIN"],
-      ["perpClearing", c.perpClearing, "WEBLOCK_PAUSER"],
-      ["spotExchange", c.spotExchange, "WEBLOCK_MARKET_ADMIN"],
-      ["navOracle", c.navOracle, "WEBLOCK_MARKET_ADMIN"],
-      ["usdr", c.usdr, "WEBLOCK_MINTER"],
-      ["wft", c.wft, "WEBLOCK_MINTER"],
-    ];
+    const operatorCold = OPERATOR_FORBIDDEN_ROLES.map(([name, r]) => [name, c[name], r]);
     for (const [name, addr, r] of operatorCold) {
       if (!addr) continue;
       const ct = new ethers.Contract(addr, acAbi, deployer);
@@ -172,12 +160,22 @@ async function main() {
   // 3) optional renounce EOA (guarded)
   if (renounce && ok && !dryRun) {
     console.log("\nRenouncing deployer EOA roles (irreversible without Safe)...");
-    for (const g of grants) {
-      const ct = new ethers.Contract(g.addr, acAbi, deployer);
-      if (!(await ct.hasRole(g.role, deployer.address))) continue;
-      const tx = await ct.renounceRole(g.role, deployer.address);
-      await tx.wait();
-      console.log(`  - renounce ${g.name}.${g.label} from EOA   ${tx.hash}`);
+    // Not just `grants`: the constructors also handed the deployer operational roles
+    // (KYC_MANAGER, SETTLEMENT, ORACLE_PUBLISHER, …) that the Safe never takes over.
+    // DEFAULT_ADMIN_ROLE goes last on each contract.
+    for (const [name, addr] of Object.entries(c)) {
+      const ct = new ethers.Contract(addr, acAbi, deployer);
+      const labels = [...new Set([...(DEPLOYER_ROLES[name] || []), ...(cold[name] || [])])];
+      const roles = [
+        ...labels.map((label) => ({ label, role: R(label, ethers) })),
+        { label: "DEFAULT_ADMIN_ROLE", role: DEFAULT_ADMIN },
+      ];
+      for (const { label, role } of roles) {
+        if (!(await ct.hasRole(role, deployer.address))) continue;
+        const tx = await ct.renounceRole(role, deployer.address);
+        await tx.wait();
+        console.log(`  - renounce ${name}.${label} from EOA   ${tx.hash}`);
+      }
     }
     console.log("  EOA renounced. Governance is now Safe-only.");
   } else if (renounce) {
